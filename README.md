@@ -80,6 +80,7 @@ npx wrangler d1 create kishore_sabha
 
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN
+npx wrangler secret put TELEGRAM_WEBHOOK_SECRET
 npx wrangler secret put ADMIN_PASSWORD
 npx wrangler secret put AUTH_SIGNING_SECRET
 ```
@@ -147,12 +148,14 @@ Useful values:
 - `GITHUB_PAGES_ORIGIN`
 - `BOT_USERNAME`
 - `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_WEBHOOK_SECRET`
 - `ADMIN_PASSWORD`
 - `AUTH_SIGNING_SECRET`
 
 ## Notes
 - Telegram only allows one active bot webhook/worker path at a time. This architecture solves the old polling conflict because Cloudflare is now the only live bot runtime.
 - If you manually save a Telegram chat ID for a person, Telegram may still require that user to have started the bot once before the bot can message them.
+- Telegram webhooks are protected with `X-Telegram-Bot-Api-Secret-Token`, and incoming `update_id` values are recorded in D1 so retried webhook deliveries do not re-run side effects.
 
 ## Verification
 Run tests:

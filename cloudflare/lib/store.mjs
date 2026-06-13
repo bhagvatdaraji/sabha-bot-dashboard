@@ -70,6 +70,27 @@ async function execute(env, sql, ...params) {
   return env.DB.prepare(sql).bind(...params).run();
 }
 
+export async function tryRecordProcessedUpdate(env, updateId) {
+  if (typeof updateId !== "number") {
+    return true;
+  }
+
+  try {
+    await execute(
+      env,
+      "INSERT INTO processed_updates (update_id) VALUES (?)",
+      updateId
+    );
+    return true;
+  } catch (error) {
+    const message = String(error?.message || "").toLowerCase();
+    if (message.includes("unique") || message.includes("primary key")) {
+      return false;
+    }
+    throw error;
+  }
+}
+
 export async function getPeople(env) {
   return (await queryAll(env, "SELECT * FROM people ORDER BY first_name, last_name")).map(mapPerson);
 }

@@ -5,6 +5,7 @@ dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const webhookUrl = process.env.TELEGRAM_WEBHOOK_URL;
+const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
 
 if (!token) {
   console.error("Missing TELEGRAM_BOT_TOKEN in .env");
@@ -16,12 +17,20 @@ if (!webhookUrl) {
   process.exit(1);
 }
 
+if (!webhookSecret) {
+  console.error("Missing TELEGRAM_WEBHOOK_SECRET in .env");
+  process.exit(1);
+}
+
 const response = await fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
   method: "POST",
   headers: {
     "content-type": "application/json"
   },
-  body: JSON.stringify({ url: webhookUrl })
+  body: JSON.stringify({
+    url: webhookUrl,
+    secret_token: webhookSecret
+  })
 });
 
 const data = await response.json();

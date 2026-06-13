@@ -32,6 +32,7 @@ import {
   markFollowUpSent,
   saveBotSession,
   setSetting,
+  tryRecordProcessedUpdate,
   updatePerson,
   updateSabhaWeek,
   updateTemplate,
@@ -246,7 +247,16 @@ async function processCallbackQuery(env, callbackQuery) {
 }
 
 async function handleTelegramWebhook(request, env) {
+  const secretHeader = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+  if (!env.TELEGRAM_WEBHOOK_SECRET || secretHeader !== env.TELEGRAM_WEBHOOK_SECRET) {
+    return jsonResponse({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const update = await readJson(request);
+  const isNewUpdate = await tryRecordProcessedUpdate(env, update.update_id);
+  if (!isNewUpdate) {
+    return jsonResponse({ ok: true });
+  }
 
   if (update.message?.chat) {
     await upsertTelegramChat(env, update.message.chat);

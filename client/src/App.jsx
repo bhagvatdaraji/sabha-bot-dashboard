@@ -222,7 +222,7 @@ function AssignmentEditor({ roles, people, assignments, onChange }) {
           const assignment = assignments[role.id] || {};
           const selectValue = assignment.personId
             ? String(assignment.personId)
-            : assignment.placeholderName
+            : assignment.isPlaceholder
               ? PLACEHOLDER_OPTION
               : "";
           return (
@@ -234,10 +234,12 @@ function AssignmentEditor({ roles, people, assignments, onChange }) {
                 value={selectValue}
                 onChange={(e) => {
                   if (e.target.value === PLACEHOLDER_OPTION) {
+                    onChange(role.id, "isPlaceholder", true);
                     onChange(role.id, "personId", "");
                     onChange(role.id, "placeholderName", assignment.placeholderName || "");
                     return;
                   }
+                  onChange(role.id, "isPlaceholder", false);
                   onChange(role.id, "placeholderName", "");
                   onChange(role.id, "personId", e.target.value ? Number(e.target.value) : "");
                 }}
@@ -380,6 +382,7 @@ function App() {
         assignmentId: assignment.id,
         roleId: assignment.roleId,
         personId: assignment.personId,
+        isPlaceholder: Boolean(assignment.placeholderName && !assignment.personId),
         placeholderName: assignment.placeholderName || "",
         customMessage: assignment.customMessage || "",
         sentAt: assignment.sentAt,

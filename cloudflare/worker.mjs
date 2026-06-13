@@ -1,5 +1,13 @@
 import { createAuthToken, requireAuth } from "./lib/auth.mjs";
-import { addCorsHeaders, ALLOWED_CENTERS, corsPreflight, dayjs, jsonResponse } from "./lib/helpers.mjs";
+import {
+  addCorsHeaders,
+  ALLOWED_CENTERS,
+  corsPreflight,
+  dayjs,
+  jsonResponse,
+  telegramKeyboard,
+  telegramRemoveKeyboard
+} from "./lib/helpers.mjs";
 import {
   buildDefaultSummaryMessage,
   buildAssignmentFollowUpMessage,
@@ -167,6 +175,10 @@ async function processRegistrationMessage(env, message, session) {
   }
 
   if (!session) {
+    const existing = await getPersonByTelegramChatId(env, message.chat.id);
+    if (existing) {
+      return false;
+    }
     await saveBotSession(env, message.chat.id, "register_first_name", {});
     await sendDirectMessage(env, message.chat.id, "Jay Swaminarayan. What is your first name?");
     return true;
@@ -180,7 +192,7 @@ async function processRegistrationMessage(env, message, session) {
 
   if (session.state === "register_last_name") {
     await saveBotSession(env, message.chat.id, "register_bkms_id", { ...session.payload, lastName: answer });
-    await sendDirectMessage(env, message.chat.id, "What is your BKMS ID?");
+    await sendDirectMessage(env, message.chat.id, "What is your BKMS/MIS ID?");
     return true;
   }
 
@@ -189,7 +201,10 @@ async function processRegistrationMessage(env, message, session) {
     await sendDirectMessage(
       env,
       message.chat.id,
-      `Which center are you from? Reply with exactly one of: ${ALLOWED_CENTERS.join(", ")}.`
+      "Which center are you from? Tap one of the options below.",
+      {
+        reply_markup: telegramKeyboard([ALLOWED_CENTERS.map((center) => ({ text: center }))])
+      }
     );
     return true;
   }
@@ -199,7 +214,10 @@ async function processRegistrationMessage(env, message, session) {
       await sendDirectMessage(
         env,
         message.chat.id,
-        `Please reply with one of these centers exactly: ${ALLOWED_CENTERS.join(", ")}.`
+        "Please tap one of the center buttons below.",
+        {
+          reply_markup: telegramKeyboard([ALLOWED_CENTERS.map((center) => ({ text: center }))])
+        }
       );
       return true;
     }
@@ -214,7 +232,10 @@ async function processRegistrationMessage(env, message, session) {
     await sendDirectMessage(
       env,
       message.chat.id,
-      `Thanks ${person.firstName}. You are now registered and will receive Kishore Sabha assignments here.`
+      `Thanks ${person.firstName}. You are now registered and will receive Kishore Sabha assignments here.`,
+      {
+        reply_markup: telegramRemoveKeyboard()
+      }
     );
     return true;
   }

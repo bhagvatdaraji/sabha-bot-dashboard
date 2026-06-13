@@ -97,4 +97,19 @@ export function telegramReplyMarkup(buttonRows) {
   };
 }
 
+export function telegramKeyboard(buttonRows, options = {}) {
+  return {
+    keyboard: buttonRows,
+    resize_keyboard: true,
+    one_time_keyboard: true,
+    ...options
+  };
+}
+
+export function telegramRemoveKeyboard() {
+  return {
+    remove_keyboard: true
+  };
+}
+
 export { dayjs };

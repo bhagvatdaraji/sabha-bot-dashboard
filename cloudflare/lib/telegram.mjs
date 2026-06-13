@@ -25,10 +25,11 @@ export async function setWebhook(env, webhookUrl) {
   return telegramRequest(env, "setWebhook", { url: webhookUrl });
 }
 
-export async function sendDirectMessage(env, chatId, text) {
+export async function sendDirectMessage(env, chatId, text, options = {}) {
   return telegramRequest(env, "sendMessage", {
     chat_id: String(chatId),
-    text
+    text,
+    ...options
   });
 }
 

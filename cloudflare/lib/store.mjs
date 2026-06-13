@@ -30,15 +30,22 @@ function mapPerson(row) {
 }
 
 function mapAssignment(row) {
+  const firstName = row.first_name || (row.placeholder_name ? row.placeholder_name.split(" ")[0] : "");
+  const lastName = row.first_name ? row.last_name : "";
+  const personName = row.first_name
+    ? `${row.first_name} ${row.last_name}`
+    : (row.placeholder_name || "Unassigned placeholder");
   return {
     id: row.assignment_id ?? row.id,
     sabhaWeekId: row.sabha_week_id,
     roleId: row.role_id,
     roleName: row.role_name,
     personId: row.person_id,
-    personName: `${row.first_name} ${row.last_name}`,
-    firstName: row.first_name,
-    lastName: row.last_name,
+    placeholderName: row.placeholder_name || "",
+    isPlaceholder: !row.person_id,
+    personName,
+    firstName,
+    lastName,
     bkmsId: row.bkms_id,
     telegramChatId: row.telegram_chat_id,
     customMessage: row.custom_message,
@@ -272,6 +279,7 @@ export async function getAssignmentsForWeek(env, sabhaWeekId) {
       a.id AS assignment_id,
       a.*,
       r.name AS role_name,
+      a.placeholder_name,
       p.first_name,
       p.last_name,
       p.bkms_id,
@@ -279,7 +287,7 @@ export async function getAssignmentsForWeek(env, sabhaWeekId) {
       mt.template_text
      FROM assignments a
      JOIN roles r ON r.id = a.role_id
-     JOIN people p ON p.id = a.person_id
+     LEFT JOIN people p ON p.id = a.person_id
      LEFT JOIN message_templates mt ON mt.role_id = a.role_id
      WHERE a.sabha_week_id = ?
      ORDER BY a.role_id`,
@@ -294,6 +302,7 @@ export async function getAssignmentById(env, assignmentId) {
       a.id AS assignment_id,
       a.*,
       r.name AS role_name,
+      a.placeholder_name,
       p.first_name,
       p.last_name,
       p.bkms_id,
@@ -301,7 +310,7 @@ export async function getAssignmentById(env, assignmentId) {
       mt.template_text
      FROM assignments a
      JOIN roles r ON r.id = a.role_id
-     JOIN people p ON p.id = a.person_id
+     LEFT JOIN people p ON p.id = a.person_id
      LEFT JOIN message_templates mt ON mt.role_id = a.role_id
      WHERE a.id = ?`,
     assignmentId
@@ -330,9 +339,11 @@ export async function upsertAssignments(env, sabhaWeekId, assignments) {
   }
 
   for (const item of assignments) {
+    const personId = item.personId ? Number(item.personId) : null;
+    const placeholderName = personId ? null : (item.placeholderName || "").trim() || null;
     const current = await queryFirst(
       env,
-      `SELECT id, person_id, custom_message, sent_at, send_count, needs_resend, telegram_message_id,
+      `SELECT id, person_id, placeholder_name, custom_message, sent_at, send_count, needs_resend, telegram_message_id,
               confirmed_at, declined_at, decline_reason, follow_up_sent_at
        FROM assignments WHERE sabha_week_id = ? AND role_id = ?`,
       sabhaWeekId,
@@ -343,17 +354,18 @@ export async function upsertAssignments(env, sabhaWeekId, assignments) {
       await execute(
         env,
         `INSERT INTO assignments (
-          sabha_week_id, role_id, person_id, custom_message, needs_resend, updated_at
-        ) VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)`,
+          sabha_week_id, role_id, person_id, placeholder_name, custom_message, needs_resend, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP)`,
         sabhaWeekId,
         item.roleId,
-        item.personId,
+        personId,
+        placeholderName,
         item.customMessage || null
       );
       continue;
     }
 
-    const personChanged = current.person_id !== item.personId;
+    const personChanged = current.person_id !== personId || (current.placeholder_name || "") !== (placeholderName || "");
     const messageChanged = (current.custom_message || "") !== (item.customMessage || "");
     const sentBefore = Boolean(current.sent_at);
     const needsResend = sentBefore && (personChanged || messageChanged);
@@ -361,7 +373,7 @@ export async function upsertAssignments(env, sabhaWeekId, assignments) {
     await execute(
       env,
       `UPDATE assignments
-       SET person_id = ?, custom_message = ?,
+       SET person_id = ?, placeholder_name = ?, custom_message = ?,
            confirmed_at = CASE WHEN ? = 1 THEN NULL ELSE confirmed_at END,
            declined_at = CASE WHEN ? = 1 THEN NULL ELSE declined_at END,
            decline_reason = CASE WHEN ? = 1 THEN NULL ELSE decline_reason END,
@@ -372,7 +384,8 @@ export async function upsertAssignments(env, sabhaWeekId, assignments) {
            telegram_message_id = CASE WHEN ? = 1 THEN NULL ELSE telegram_message_id END,
            updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
-      item.personId,
+      personId,
+      placeholderName,
       item.customMessage || null,
       personChanged ? 1 : 0,
       personChanged ? 1 : 0,
@@ -653,10 +666,10 @@ export async function getNotificationAssignments(env, sabhaWeekId, assignmentIds
   const allAssignments = sabhaWeek.assignments;
   const filtered = assignmentIds?.length
     ? allAssignments.filter((item) => assignmentIds.includes(item.id))
-    : allAssignments.filter((item) => !item.sentAt || item.needsResend);
+    : allAssignments.filter((item) => (!item.sentAt || item.needsResend) && item.personId);
 
   if (!filtered.length) {
-    throw new Error("There are no new or changed assignments to send.");
+    throw new Error("There are no new or changed member assignments to send.");
   }
 
   const assignments = [];

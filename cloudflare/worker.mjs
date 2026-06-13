@@ -129,8 +129,9 @@ async function sendAssignments(env, sabhaWeekId) {
 async function processStartCommand(env, message) {
   const token = (message.text || "").split(" ")[1];
   if (!token) {
+    const session = await getBotSession(env, message.chat.id);
     const existing = await getPersonByTelegramChatId(env, message.chat.id);
-    if (existing) {
+    if (existing && !session) {
       await sendDirectMessage(
         env,
         message.chat.id,
@@ -139,6 +140,7 @@ async function processStartCommand(env, message) {
       return;
     }
 
+    await clearBotSession(env, message.chat.id);
     await saveBotSession(env, message.chat.id, "register_first_name", {});
     await sendDirectMessage(env, message.chat.id, "Jay Swaminarayan. Let's get you connected. What is your first name?");
     return;

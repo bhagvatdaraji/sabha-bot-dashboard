@@ -23,6 +23,8 @@ const emptyWeek = {
   status: "scheduled"
 };
 
+const PLACEHOLDER_OPTION = "__placeholder__";
+
 const emptyDmState = {
   personId: "",
   message: ""
@@ -79,6 +81,9 @@ async function apiFetch(path, token, options = {}) {
 }
 
 function getAssignmentSendLabel(assignment) {
+  if (assignment.placeholderName && !assignment.personId) {
+    return "Placeholder only";
+  }
   if (assignment.needsResend) {
     return `Edited after send (${assignment.sendCount} sent)`;
   }
@@ -198,7 +203,10 @@ function PersonForm({ form, onChange, onSubmit, submitLabel }) {
 }
 
 function AssignmentEditor({ roles, people, assignments, onChange }) {
-  const assignedCount = roles.filter((role) => assignments[role.id]?.personId).length;
+  const assignedCount = roles.filter((role) => {
+    const assignment = assignments[role.id];
+    return assignment?.personId || assignment?.placeholderName?.trim();
+  }).length;
 
   return (
     <div className="panel">
@@ -212,14 +220,27 @@ function AssignmentEditor({ roles, people, assignments, onChange }) {
       <div className="assignment-list">
         {roles.map((role) => {
           const assignment = assignments[role.id] || {};
+          const selectValue = assignment.personId
+            ? String(assignment.personId)
+            : assignment.placeholderName
+              ? PLACEHOLDER_OPTION
+              : "";
           return (
             <div key={role.id} className="assignment-row">
               <div>
                 <strong>{role.name}</strong>
               </div>
               <select
-                value={assignment.personId || ""}
-                onChange={(e) => onChange(role.id, "personId", Number(e.target.value))}
+                value={selectValue}
+                onChange={(e) => {
+                  if (e.target.value === PLACEHOLDER_OPTION) {
+                    onChange(role.id, "personId", "");
+                    onChange(role.id, "placeholderName", assignment.placeholderName || "");
+                    return;
+                  }
+                  onChange(role.id, "placeholderName", "");
+                  onChange(role.id, "personId", e.target.value ? Number(e.target.value) : "");
+                }}
               >
                 <option value="">Select member</option>
                 {people.map((person) => (
@@ -227,7 +248,15 @@ function AssignmentEditor({ roles, people, assignments, onChange }) {
                     {person.firstName} {person.lastName}
                   </option>
                 ))}
+                <option value={PLACEHOLDER_OPTION}>Write placeholder name</option>
               </select>
+              {selectValue === PLACEHOLDER_OPTION && (
+                <input
+                  placeholder="Type placeholder name"
+                  value={assignment.placeholderName || ""}
+                  onChange={(e) => onChange(role.id, "placeholderName", e.target.value)}
+                />
+              )}
               <textarea
                 rows="2"
                 placeholder="Optional custom message override"
@@ -238,6 +267,7 @@ function AssignmentEditor({ roles, people, assignments, onChange }) {
                 <span className={`badge ${assignment.needsResend ? "badge--warm" : assignment.sendCount > 1 ? "badge--accent" : ""}`}>
                   {getAssignmentSendLabel(assignment)}
                 </span>
+                {assignment.placeholderName && <span className="badge badge--outline">Placeholder</span>}
                 {assignment.confirmedAt && <span className="badge badge--success">Confirmed</span>}
                 {assignment.declinedAt && <span className="badge badge--danger">Can't do it</span>}
                 {assignment.followUpSentAt && <span className="badge badge--accent">Follow-up sent</span>}
@@ -350,6 +380,7 @@ function App() {
         assignmentId: assignment.id,
         roleId: assignment.roleId,
         personId: assignment.personId,
+        placeholderName: assignment.placeholderName || "",
         customMessage: assignment.customMessage || "",
         sentAt: assignment.sentAt,
         confirmedAt: assignment.confirmedAt,
@@ -514,10 +545,11 @@ function App() {
 
       const assignmentPayload = roles
         .map((role) => ({ roleId: role.id, assignment: assignmentsDraft[role.id] }))
-        .filter(({ assignment }) => assignment?.personId)
+        .filter(({ assignment }) => assignment?.personId || assignment?.placeholderName?.trim())
         .map(({ roleId, assignment }) => ({
           roleId,
-          personId: assignment.personId,
+          personId: assignment.personId || null,
+          placeholderName: assignment.placeholderName?.trim() || null,
           customMessage: assignment.customMessage || null
         }));
 

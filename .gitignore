@@ -8,6 +8,7 @@ logs/
 outputs/
 data/*.sqlite
 data/*.sqlite-*
+data/archive/
 uploads/*
 !uploads/.gitkeep
 config/launcher.local.env

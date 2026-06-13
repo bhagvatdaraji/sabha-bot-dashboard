@@ -1,0 +1,15 @@
+.DS_Store
+node_modules
+client/node_modules
+client/dist
+.env
+dist/
+logs/
+outputs/
+data/*.sqlite
+data/*.sqlite-*
+uploads/*
+!uploads/.gitkeep
+config/launcher.local.env
+.wrangler
+cloudflare/seed.sql

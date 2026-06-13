@@ -1,0 +1,26 @@
+services:
+  kishore-server:
+    build:
+      context: .
+    command: npm run start:server
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-4000}:4000"
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs
+
+  kishore-worker:
+    build:
+      context: .
+    command: npm run start:worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+      - ./uploads:/app/uploads
+      - ./outputs:/app/outputs

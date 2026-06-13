@@ -1,0 +1,33 @@
+{
+  "name": "kishore-sabha-coordinator",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev:client": "npm --prefix client run dev",
+    "dev:worker": "wrangler dev",
+    "dev": "concurrently \"npm run dev:worker\" \"npm run dev:client\"",
+    "build:client": "npm --prefix client run build",
+    "build": "npm run build:client",
+    "deploy:worker": "wrangler deploy",
+    "d1:migrate": "wrangler d1 migrations apply kishore_sabha",
+    "set:webhook": "node scripts/set-telegram-webhook.mjs",
+    "export:seed": "node scripts/export-sqlite-to-d1-seed.js",
+    "test": "node --test server/src/**/*.test.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "cors": "^2.8.5",
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "multer": "^1.4.5-lts.2",
+    "nanoid": "^5.1.5",
+    "node-cron": "^4.2.1",
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "wrangler": "^4.100.0"
+  }
+}

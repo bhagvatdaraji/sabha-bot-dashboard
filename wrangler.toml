@@ -1,0 +1,20 @@
+name = "kishore-sabha-coordinator"
+main = "cloudflare/worker.mjs"
+compatibility_date = "2026-06-13"
+
+[vars]
+TIMEZONE = "America/Los_Angeles"
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
+GITHUB_PAGES_ORIGIN = ""
+BOT_USERNAME = "sfkishorebot"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kishore_sabha"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+[observability.logs]
+enabled = true
+
+[triggers]
+crons = ["0 * * * *"]

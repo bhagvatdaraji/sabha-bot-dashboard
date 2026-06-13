@@ -40,6 +40,27 @@ export async function sendGroupMessage(env, chatId, text) {
   });
 }
 
+export async function sendTextDocument(env, chatId, fileName, content, caption = "") {
+  const form = new FormData();
+  form.set("chat_id", String(chatId));
+  if (caption) {
+    form.set("caption", caption);
+  }
+  form.set("document", new Blob([content], { type: "text/csv;charset=utf-8" }), fileName);
+
+  const response = await fetch(botUrl(env, "sendDocument"), {
+    method: "POST",
+    body: form
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.ok) {
+    throw new Error(data.description || "Telegram sendDocument failed.");
+  }
+
+  return data.result;
+}
+
 export async function sendAssignmentMessage(env, assignment, sabhaWeek) {
   return telegramRequest(env, "sendMessage", {
     chat_id: String(assignment.telegramChatId),

@@ -9,6 +9,10 @@ import {
   telegramRemoveKeyboard
 } from "./lib/helpers.mjs";
 import {
+  buildAttendanceCsv,
+  getAttendanceOverview,
+  getAttendanceSessionByToken,
+  getAttendanceWeek,
   buildDefaultSummaryMessage,
   buildAssignmentFollowUpMessage,
   clearBotSession,
@@ -19,6 +23,8 @@ import {
   deletePerson,
   deleteSabhaWeek,
   declineAssignment,
+  ensureAttendanceSession,
+  finalizeAttendanceForDueSessions,
   findUpcomingSabha,
   generateLinkToken,
   getAssignmentById,
@@ -40,6 +46,8 @@ import {
   getSetting,
   getTemplates,
   logConfirmationEvent,
+  markAttendanceFromTelegram,
+  markAttendanceReportSent,
   markAssignmentSent,
   markFollowUpSent,
   markSabhaSummarySent,
@@ -47,6 +55,7 @@ import {
   setSummaryChatTarget,
   setSetting,
   tryRecordProcessedUpdate,
+  upsertAttendanceManual,
   updatePerson,
   updateSabhaWeek,
   updateTemplate,
@@ -61,6 +70,7 @@ import {
   sendAssignmentMessage,
   sendDirectMessage,
   sendGroupMessage,
+  sendTextDocument,
   telegramRequest
 } from "./lib/telegram.mjs";
 
@@ -92,6 +102,26 @@ async function notifyCoordinator(env, text) {
 
   await sendDirectMessage(env, coordinator.telegramChatId, text);
   return true;
+}
+
+async function sendAttendanceReport(env, attendanceSessionId, sabhaWeekId) {
+  const coordinator = await getCoordinator(env);
+  if (!coordinator?.telegramChatId) {
+    throw new Error("No Telegram-linked Kishore coordinator is set.");
+  }
+
+  const attendanceWeek = await getAttendanceWeek(env, sabhaWeekId);
+  const csv = await buildAttendanceCsv(env, sabhaWeekId);
+  const fileName = `attendance-${attendanceWeek.sabhaDate}.csv`;
+  const response = await sendTextDocument(
+    env,
+    coordinator.telegramChatId,
+    fileName,
+    csv,
+    `Jay Swaminarayan. Here is the attendance report for ${attendanceWeek.sabhaDate} at ${attendanceWeek.sabhaTime}.`
+  );
+  await markAttendanceReportSent(env, attendanceSessionId, response.message_id);
+  return response;
 }
 
 async function sendSabhaSummary(env, sabhaWeekId, payload = {}) {
@@ -136,6 +166,46 @@ async function sendAssignments(env, sabhaWeekId) {
 
 async function processStartCommand(env, message) {
   const token = (message.text || "").split(" ")[1];
+  if (token?.startsWith("attend_")) {
+    const attendanceToken = token.slice("attend_".length);
+    const existing = await getPersonByTelegramChatId(env, message.chat.id);
+
+    if (existing) {
+      const result = await markAttendanceFromTelegram(env, attendanceToken, message.chat.id);
+      if (!result.ok && result.reason === "closed") {
+        await sendDirectMessage(env, message.chat.id, "This attendance check-in is closed for that Sabha.");
+        return;
+      }
+      if (result.lockedManual) {
+        await sendDirectMessage(env, message.chat.id, "Your attendance was already updated manually by the coordinator.");
+        return;
+      }
+      if (result.alreadyRecorded) {
+        await sendDirectMessage(env, message.chat.id, `Your attendance is already marked as ${result.status}.`);
+        return;
+      }
+      await sendDirectMessage(
+        env,
+        message.chat.id,
+        `Attendance recorded. You are marked ${result.status} for Kishore Sabha on ${result.sabhaWeek.sabhaDate}.`
+      );
+      return;
+    }
+
+    const attendanceSession = await getAttendanceSessionByToken(env, attendanceToken);
+    if (!attendanceSession || !attendanceSession.active || dayjs(attendanceSession.expiresAt).isSame(dayjs()) || dayjs(attendanceSession.expiresAt).isBefore(dayjs())) {
+      await sendDirectMessage(env, message.chat.id, "This attendance check-in is closed for that Sabha.");
+      return;
+    }
+
+    await clearBotSession(env, message.chat.id);
+    await saveBotSession(env, message.chat.id, "register_first_name", {
+      pendingAttendanceToken: attendanceToken
+    });
+    await sendDirectMessage(env, message.chat.id, "Jay Swaminarayan. Let's get you connected first. What is your first name?");
+    return;
+  }
+
   if (!token) {
     const session = await getBotSession(env, message.chat.id);
     const existing = await getPersonByTelegramChatId(env, message.chat.id);
@@ -237,6 +307,19 @@ async function processRegistrationMessage(env, message, session) {
         reply_markup: telegramRemoveKeyboard()
       }
     );
+
+    if (session.payload?.pendingAttendanceToken) {
+      const attendanceResult = await markAttendanceFromTelegram(env, session.payload.pendingAttendanceToken, message.chat.id);
+      if (attendanceResult.ok && attendanceResult.status) {
+        await sendDirectMessage(
+          env,
+          message.chat.id,
+          `Attendance recorded. You are marked ${attendanceResult.status} for Kishore Sabha on ${attendanceResult.sabhaWeek.sabhaDate}.`
+        );
+      } else {
+        await sendDirectMessage(env, message.chat.id, "You are registered, but that attendance check-in is now closed.");
+      }
+    }
     return true;
   }
 
@@ -365,6 +448,18 @@ async function runScheduledJobs(controller, env) {
     await markFollowUpSent(env, assignment.id);
   }
 
+  const dueAttendanceSessions = await finalizeAttendanceForDueSessions(env, now);
+  for (const session of dueAttendanceSessions) {
+    if (controller.signal.aborted) {
+      return;
+    }
+    try {
+      await sendAttendanceReport(env, session.id, session.sabhaWeekId);
+    } catch (error) {
+      console.error("Attendance report send failed:", error);
+    }
+  }
+
   const snapshot = await getReminderSnapshot(env, now);
   if (!snapshot.shouldRemind || !snapshot.coordinator?.telegramChatId) {
     return;
@@ -415,6 +510,7 @@ async function routeApi(request, env, url) {
   if (pathname === "/api/bootstrap" && method === "GET") {
     return jsonResponse({
       overview: await getOverview(env),
+      attendance: await getAttendanceOverview(env),
       people: await getPeople(env),
       roles: await getRoles(env),
       templates: await getTemplates(env),
@@ -491,6 +587,10 @@ async function routeApi(request, env, url) {
     return jsonResponse(await getHistory(env));
   }
 
+  if (pathname === "/api/attendance" && method === "GET") {
+    return jsonResponse(await getAttendanceOverview(env));
+  }
+
   if (pathname === "/api/sabha-weeks" && method === "POST") {
     return jsonResponse(await createSabhaWeek(env, await readJson(request)), { status: 201 });
   }
@@ -517,6 +617,30 @@ async function routeApi(request, env, url) {
   const weekSendMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/send$/);
   if (weekSendMatch && method === "POST") {
     return jsonResponse(await sendAssignments(env, Number(weekSendMatch[1])));
+  }
+
+  const weekAttendanceMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/attendance$/);
+  if (weekAttendanceMatch && method === "GET") {
+    const week = await getAttendanceWeek(env, Number(weekAttendanceMatch[1]));
+    return week ? jsonResponse(week) : notFound();
+  }
+  if (weekAttendanceMatch && method === "PUT") {
+    return jsonResponse(await upsertAttendanceManual(env, Number(weekAttendanceMatch[1]), (await readJson(request)).records || []));
+  }
+
+  const weekAttendanceSessionMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/attendance\/session$/);
+  if (weekAttendanceSessionMatch && method === "POST") {
+    const body = await readJson(request);
+    return jsonResponse(await ensureAttendanceSession(env, Number(weekAttendanceSessionMatch[1]), { refresh: Boolean(body.refresh) }));
+  }
+
+  const weekAttendanceReportMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/attendance\/report$/);
+  if (weekAttendanceReportMatch && method === "POST") {
+    const weekId = Number(weekAttendanceReportMatch[1]);
+    const session = await ensureAttendanceSession(env, weekId);
+    await finalizeAttendanceForDueSessions(env, dayjs(session.expiresAt));
+    const response = await sendAttendanceReport(env, session.id, weekId);
+    return jsonResponse({ ok: true, messageId: response.message_id });
   }
 
   const weekSummaryMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/summary$/);

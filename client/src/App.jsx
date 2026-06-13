@@ -41,10 +41,16 @@ const emptySummaryState = {
   sendHistory: []
 };
 
+const emptyAttendanceOverview = {
+  currentWeek: null,
+  pastWeeks: []
+};
+
 const TABS = {
   members: "members",
   planner: "planner",
   history: "history",
+  attendance: "attendance",
   summary: "summary"
 };
 
@@ -147,6 +153,27 @@ function formatSummaryDate(dateString) {
         day: "numeric",
         year: "numeric"
       });
+}
+
+function getAttendanceStatusLabel(record) {
+  return record.status || "Not checked in yet";
+}
+
+function getAttendanceStatusTone(status) {
+  if (status === "Present") {
+    return "badge--success";
+  }
+  if (status === "Late") {
+    return "badge--warm";
+  }
+  if (status === "Absent") {
+    return "badge--danger";
+  }
+  return "badge--outline";
+}
+
+function getAttendanceQrUrl(deepLink) {
+  return `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(deepLink)}`;
 }
 
 function StatCard({ label, value, tone = "default" }) {
@@ -307,6 +334,7 @@ function App() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [overview, setOverview] = useState(null);
+  const [attendanceOverview, setAttendanceOverview] = useState(emptyAttendanceOverview);
   const [people, setPeople] = useState([]);
   const [roles, setRoles] = useState([]);
   const [templates, setTemplates] = useState([]);
@@ -322,11 +350,21 @@ function App() {
   const [dmState, setDmState] = useState(emptyDmState);
   const [groupMessageState, setGroupMessageState] = useState(emptyGroupMessageState);
   const [summaryForm, setSummaryForm] = useState(emptySummaryState);
+  const [selectedAttendanceWeekId, setSelectedAttendanceWeekId] = useState("");
+  const [attendanceDraft, setAttendanceDraft] = useState({});
   const [activeTab, setActiveTab] = useState(TABS.members);
   const [showTemplates, setShowTemplates] = useState(false);
 
   const upcomingWeeks = useMemo(() => history.filter((week) => isUpcomingWeek(week)), [history]);
   const pastWeeks = useMemo(() => history.filter((week) => !isUpcomingWeek(week)), [history]);
+  const attendanceWeeks = useMemo(
+    () => [attendanceOverview?.currentWeek, ...(attendanceOverview?.pastWeeks || [])].filter(Boolean),
+    [attendanceOverview]
+  );
+  const selectedAttendanceWeek = useMemo(
+    () => attendanceWeeks.find((week) => String(week.id) === String(selectedAttendanceWeekId)) || attendanceOverview?.currentWeek || null,
+    [attendanceWeeks, attendanceOverview, selectedAttendanceWeekId]
+  );
 
   async function loadBootstrap(authToken = token) {
     if (!authToken) {
@@ -338,6 +376,7 @@ function App() {
     try {
       const data = await apiFetch("/bootstrap", authToken);
       setOverview(data.overview);
+      setAttendanceOverview(data.attendance || emptyAttendanceOverview);
       setPeople(data.people);
       setRoles(data.roles);
       setTemplates(data.templates);
@@ -356,6 +395,22 @@ function App() {
           status: activeWeek.status
         });
         hydrateSummary(activeWeek);
+      }
+      const nextAttendanceWeekId = selectedAttendanceWeekId
+        && (data.attendance?.currentWeek?.id === Number(selectedAttendanceWeekId)
+          || (data.attendance?.pastWeeks || []).some((week) => week.id === Number(selectedAttendanceWeekId)))
+        ? selectedAttendanceWeekId
+        : String(data.attendance?.currentWeek?.id || "");
+      setSelectedAttendanceWeekId(nextAttendanceWeekId);
+      const nextAttendanceWeek = [data.attendance?.currentWeek, ...(data.attendance?.pastWeeks || [])]
+        .filter(Boolean)
+        .find((week) => String(week.id) === nextAttendanceWeekId)
+        || data.attendance?.currentWeek
+        || null;
+      if (nextAttendanceWeek) {
+        hydrateAttendance(nextAttendanceWeek);
+      } else {
+        setAttendanceDraft({});
       }
       setErrorMessage("");
     } catch (error) {
@@ -410,6 +465,18 @@ function App() {
     });
   }
 
+  function hydrateAttendance(week) {
+    setSelectedAttendanceWeekId(String(week.id));
+    const nextDraft = {};
+    (week.records || []).forEach((record) => {
+      nextDraft[record.personId] = {
+        status: record.status || "",
+        notes: record.notes || ""
+      };
+    });
+    setAttendanceDraft(nextDraft);
+  }
+
   function updatePersonForm(field, value) {
     setPersonForm((current) => ({ ...current, [field]: value }));
   }
@@ -431,6 +498,16 @@ function App() {
 
   function updateSummaryForm(field, value) {
     setSummaryForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateAttendanceDraft(personId, field, value) {
+    setAttendanceDraft((current) => ({
+      ...current,
+      [personId]: {
+        ...current[personId],
+        [field]: value
+      }
+    }));
   }
 
   async function handleLogin(event) {
@@ -456,12 +533,15 @@ function App() {
     localStorage.removeItem(TOKEN_KEY);
     setToken("");
     setOverview(null);
+    setAttendanceOverview(emptyAttendanceOverview);
     setPeople([]);
     setRoles([]);
     setTemplates([]);
     setHistory([]);
     setCurrentWeek(null);
     setAssignmentsDraft({});
+    setSelectedAttendanceWeekId("");
+    setAttendanceDraft({});
   }
 
   async function handlePersonSubmit(event) {
@@ -703,6 +783,64 @@ function App() {
     }
   }
 
+  async function handleSelectAttendanceWeek(weekId) {
+    try {
+      const week = await apiFetch(`/sabha-weeks/${weekId}/attendance`, token);
+      hydrateAttendance(week);
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function handleGenerateAttendanceSession(weekId, refresh = false) {
+    try {
+      await apiFetch(`/sabha-weeks/${weekId}/attendance/session`, token, {
+        method: "POST",
+        body: JSON.stringify({ refresh })
+      });
+      setStatusMessage(refresh ? "Attendance QR refreshed." : "Attendance QR generated.");
+      await loadBootstrap();
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function handleSaveAttendance() {
+    if (!selectedAttendanceWeek) {
+      setErrorMessage("Choose a Sabha week for attendance.");
+      return;
+    }
+    try {
+      const records = (selectedAttendanceWeek.records || []).map((record) => ({
+        personId: record.personId,
+        status: attendanceDraft[record.personId]?.status || null,
+        notes: attendanceDraft[record.personId]?.notes || ""
+      }));
+      const updated = await apiFetch(`/sabha-weeks/${selectedAttendanceWeek.id}/attendance`, token, {
+        method: "PUT",
+        body: JSON.stringify({ records })
+      });
+      hydrateAttendance(updated);
+      setStatusMessage("Attendance updated.");
+      await loadBootstrap();
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function handleSendAttendanceReport(weekId) {
+    try {
+      await apiFetch(`/sabha-weeks/${weekId}/attendance/report`, token, {
+        method: "POST",
+        body: JSON.stringify({})
+      });
+      setStatusMessage("Attendance report sent to the coordinator.");
+      await loadBootstrap();
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
   function startNewWeek() {
     setActiveTab(TABS.planner);
     setCurrentWeek(null);
@@ -750,6 +888,9 @@ function App() {
         </button>
         <button type="button" className={`tab-button ${activeTab === TABS.history ? "tab-button--active" : ""}`} onClick={() => setActiveTab(TABS.history)}>
           Sabha History
+        </button>
+        <button type="button" className={`tab-button ${activeTab === TABS.attendance ? "tab-button--active" : ""}`} onClick={() => setActiveTab(TABS.attendance)}>
+          Attendance
         </button>
         <button type="button" className={`tab-button ${activeTab === TABS.summary ? "tab-button--active" : ""}`} onClick={() => setActiveTab(TABS.summary)}>
           Sabha Summary
@@ -1054,6 +1195,154 @@ function App() {
                     <p>Past weeks will appear here after their scheduled time passes.</p>
                   </div>
                 )}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {activeTab === TABS.attendance && (
+          <section className="tab-panel tab-panel--attendance">
+            <div className="panel">
+              <div className="panel-header">
+                <h3>Current / Upcoming Attendance</h3>
+                <p>Generate a Sabha-specific QR, let members check in through Telegram, and watch attendance update live.</p>
+              </div>
+              {attendanceOverview?.currentWeek ? (
+                <div className="attendance-hero">
+                  <div>
+                    <strong>{attendanceOverview.currentWeek.sabhaDate}</strong>
+                    <p>{attendanceOverview.currentWeek.sabhaTime}</p>
+                    <div className="attendance-actions">
+                      <button
+                        type="button"
+                        className="primary"
+                        onClick={() => handleGenerateAttendanceSession(attendanceOverview.currentWeek.id, Boolean(attendanceOverview.currentWeek.session))}
+                      >
+                        {attendanceOverview.currentWeek.session ? "Refresh QR Token" : "Generate Attendance QR"}
+                      </button>
+                      {attendanceOverview.currentWeek.session?.deepLink && (
+                        <button
+                          type="button"
+                          className="ghost"
+                          onClick={() => navigator.clipboard.writeText(attendanceOverview.currentWeek.session.deepLink)}
+                        >
+                          Copy Deep Link
+                        </button>
+                      )}
+                    </div>
+                    {attendanceOverview.currentWeek.session ? (
+                      <p className="attendance-link">{attendanceOverview.currentWeek.session.deepLink}</p>
+                    ) : (
+                      <p className="reason-text">No attendance QR has been generated for this Sabha yet.</p>
+                    )}
+                  </div>
+                  {attendanceOverview.currentWeek.session?.deepLink && (
+                    <img
+                      className="attendance-qr"
+                      src={getAttendanceQrUrl(attendanceOverview.currentWeek.session.deepLink)}
+                      alt="Attendance QR code"
+                    />
+                  )}
+                </div>
+              ) : (
+                <p className="reason-text">Create a Sabha week first to enable attendance.</p>
+              )}
+            </div>
+
+            {selectedAttendanceWeek && (
+              <>
+                <section className="stats-grid">
+                  <StatCard label="Present" value={selectedAttendanceWeek.counts.present} tone="success" />
+                  <StatCard label="Late" value={selectedAttendanceWeek.counts.late} tone="warm" />
+                  <StatCard label="Absent" value={selectedAttendanceWeek.counts.absent} tone="danger" />
+                  <StatCard label="Not checked in yet" value={selectedAttendanceWeek.counts.unchecked} />
+                </section>
+
+                <div className="panel">
+                  <div className="panel-header">
+                    <h3>Attendance Roster</h3>
+                    <p>
+                      {selectedAttendanceWeek.sabhaDate} at {selectedAttendanceWeek.sabhaTime}
+                    </p>
+                  </div>
+                  <div className="attendance-actions">
+                    <button type="button" className="ghost" onClick={() => handleGenerateAttendanceSession(selectedAttendanceWeek.id, true)}>
+                      Refresh QR Token
+                    </button>
+                    <button type="button" className="ghost" onClick={() => handleSendAttendanceReport(selectedAttendanceWeek.id)}>
+                      Send Attendance Report
+                    </button>
+                    <button type="button" className="primary" onClick={handleSaveAttendance}>
+                      Save Attendance Changes
+                    </button>
+                  </div>
+                  <div className="table-list">
+                    {selectedAttendanceWeek.records.map((record) => (
+                      <div key={record.personId} className="person-row attendance-row">
+                        <div>
+                          <strong>{record.personName}</strong>
+                          <p>{record.center} · BKMS/MIS {record.bkmsId}</p>
+                          <p>
+                            {record.checkedInAt
+                              ? `Checked in ${new Date(record.checkedInAt).toLocaleString()}`
+                              : "No check-in recorded yet"}
+                          </p>
+                          {record.source && <p>Source: {record.source}</p>}
+                        </div>
+                        <div className="attendance-controls">
+                          <span className={`badge ${getAttendanceStatusTone(attendanceDraft[record.personId]?.status || record.status)}`}>
+                            {getAttendanceStatusLabel({ status: attendanceDraft[record.personId]?.status || record.status })}
+                          </span>
+                          <select
+                            value={attendanceDraft[record.personId]?.status || ""}
+                            onChange={(e) => updateAttendanceDraft(record.personId, "status", e.target.value)}
+                          >
+                            <option value="">Not checked in yet</option>
+                            <option value="Present">Present</option>
+                            <option value="Late">Late</option>
+                            <option value="Absent">Absent</option>
+                          </select>
+                          <input
+                            placeholder="Optional attendance note"
+                            value={attendanceDraft[record.personId]?.notes || ""}
+                            onChange={(e) => updateAttendanceDraft(record.personId, "notes", e.target.value)}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
+            <div className="panel">
+              <div className="panel-header">
+                <h3>Previous Weeks</h3>
+                <p>Open any older Sabha week to review or manually edit attendance.</p>
+              </div>
+              <div className="history-list">
+                {attendanceWeeks.map((week) => (
+                  <button
+                    type="button"
+                    key={week.id}
+                    className={`history-card history-card--button ${selectedAttendanceWeek?.id === week.id ? "history-card--active" : ""}`}
+                    onClick={() => handleSelectAttendanceWeek(week.id)}
+                  >
+                    <strong>{week.sabhaDate}</strong>
+                    <p>{week.sabhaTime}</p>
+                    <div className="history-roles">
+                      <span className="badge badge--success">Present: {week.counts.present}</span>
+                      <span className="badge badge--warm">Late: {week.counts.late}</span>
+                      <span className="badge badge--danger">Absent: {week.counts.absent}</span>
+                      <span className="badge badge--outline">Unchecked: {week.counts.unchecked}</span>
+                    </div>
+                    <div className="history-actions">
+                      <span className={`badge ${week.session?.reportSentAt ? "badge--success" : "badge--outline"}`}>
+                        {week.session?.reportSentAt ? "Report sent" : "Report not sent"}
+                      </span>
+                    </div>
+                  </button>
+                ))}
               </div>
             </div>
           </section>

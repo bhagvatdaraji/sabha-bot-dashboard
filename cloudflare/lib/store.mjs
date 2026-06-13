@@ -90,6 +90,43 @@ function mapSummarySend(row) {
   };
 }
 
+function mapAttendanceSession(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    sabhaWeekId: row.sabha_week_id,
+    token: row.token,
+    active: Boolean(row.active),
+    expiresAt: row.expires_at,
+    reportSentAt: row.report_sent_at,
+    reportMessageId: row.report_message_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapAttendanceRecord(row) {
+  return {
+    id: row.id,
+    sabhaWeekId: row.sabha_week_id,
+    personId: row.person_id,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    personName: `${row.first_name} ${row.last_name}`,
+    bkmsId: row.bkms_id,
+    center: row.center,
+    telegramChatId: row.telegram_chat_id,
+    status: row.status,
+    checkedInAt: row.checked_in_at,
+    source: row.source,
+    notes: row.notes,
+    updatedAt: row.updated_at
+  };
+}
+
 async function queryAll(env, sql, ...params) {
   const result = await env.DB.prepare(sql).bind(...params).all();
   return result.results || [];
@@ -769,6 +806,445 @@ export async function getSummaryChat(env) {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+function getAttendanceExpiryIso(sabhaWeek, timezone) {
+  return dayjs.tz(`${sabhaWeek.sabhaDate}T18:00:00`, timezone).toISOString();
+}
+
+function getAttendanceLateThreshold(sabhaWeek, timezone) {
+  return combineSabhaDateTime(sabhaWeek.sabhaDate, sabhaWeek.sabhaTime, timezone).add(30, "minute");
+}
+
+function buildAttendanceDeepLink(botUsername, token) {
+  return `https://t.me/${botUsername}?start=attend_${token}`;
+}
+
+function buildAttendanceCounts(records) {
+  return records.reduce((counts, record) => {
+    if (!record.status) {
+      counts.unchecked += 1;
+      return counts;
+    }
+    if (record.status === "Present") {
+      counts.present += 1;
+    } else if (record.status === "Late") {
+      counts.late += 1;
+    } else if (record.status === "Absent") {
+      counts.absent += 1;
+    } else {
+      counts.unchecked += 1;
+    }
+    return counts;
+  }, {
+    present: 0,
+    late: 0,
+    absent: 0,
+    unchecked: 0
+  });
+}
+
+export async function getAttendanceSessionByWeekId(env, sabhaWeekId) {
+  return mapAttendanceSession(await queryFirst(
+    env,
+    "SELECT * FROM attendance_sessions WHERE sabha_week_id = ?",
+    sabhaWeekId
+  ));
+}
+
+export async function ensureAttendanceSession(env, sabhaWeekId, { refresh = false } = {}) {
+  const sabhaWeek = await getSabhaWeekById(env, sabhaWeekId);
+  if (!sabhaWeek) {
+    throw new Error("Sabha week not found.");
+  }
+
+  const existing = await getAttendanceSessionByWeekId(env, sabhaWeekId);
+  const timezone = env.TIMEZONE || "America/Los_Angeles";
+  if (existing && !refresh) {
+    return {
+      ...existing,
+      deepLink: buildAttendanceDeepLink(env.BOT_USERNAME || "sfkishorebot", existing.token)
+    };
+  }
+
+  const token = crypto.randomUUID().replace(/-/g, "");
+  const expiresAt = getAttendanceExpiryIso(sabhaWeek, timezone);
+
+  await execute(
+    env,
+    `INSERT INTO attendance_sessions (
+      sabha_week_id, token, active, expires_at, report_sent_at, report_message_id, updated_at
+    ) VALUES (?, ?, 1, ?, NULL, NULL, CURRENT_TIMESTAMP)
+    ON CONFLICT(sabha_week_id) DO UPDATE SET
+      token = excluded.token,
+      active = 1,
+      expires_at = excluded.expires_at,
+      report_sent_at = NULL,
+      report_message_id = NULL,
+      updated_at = CURRENT_TIMESTAMP`,
+    sabhaWeekId,
+    token,
+    expiresAt
+  );
+
+  const session = await getAttendanceSessionByWeekId(env, sabhaWeekId);
+  return {
+    ...session,
+    deepLink: buildAttendanceDeepLink(env.BOT_USERNAME || "sfkishorebot", session.token)
+  };
+}
+
+export async function getAttendanceSessionByToken(env, token) {
+  const row = await queryFirst(
+    env,
+    `SELECT
+      s.*,
+      w.sabha_date,
+      w.sabha_time,
+      w.notes,
+      w.status
+     FROM attendance_sessions s
+     JOIN sabha_weeks w ON w.id = s.sabha_week_id
+     WHERE s.token = ?`,
+    token
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    ...mapAttendanceSession(row),
+    sabhaWeek: {
+      id: row.sabha_week_id,
+      sabhaDate: row.sabha_date,
+      sabhaTime: row.sabha_time,
+      notes: row.notes,
+      status: row.status
+    }
+  };
+}
+
+export async function getAttendanceRecordsForWeek(env, sabhaWeekId) {
+  return (await queryAll(
+    env,
+    `SELECT
+      r.*,
+      p.first_name,
+      p.last_name,
+      p.bkms_id,
+      p.center,
+      p.telegram_chat_id
+     FROM attendance_records r
+     JOIN people p ON p.id = r.person_id
+     WHERE r.sabha_week_id = ?
+     ORDER BY p.first_name, p.last_name`,
+    sabhaWeekId
+  )).map(mapAttendanceRecord);
+}
+
+export async function getAttendanceWeek(env, sabhaWeekId) {
+  const sabhaWeek = await getSabhaWeekById(env, sabhaWeekId);
+  if (!sabhaWeek) {
+    return null;
+  }
+
+  const timezone = env.TIMEZONE || "America/Los_Angeles";
+  const session = await getAttendanceSessionByWeekId(env, sabhaWeekId);
+  const people = await queryAll(
+    env,
+    `SELECT
+      p.id AS person_id,
+      p.first_name,
+      p.last_name,
+      p.bkms_id,
+      p.center,
+      p.telegram_chat_id,
+      r.id,
+      r.status,
+      r.checked_in_at,
+      r.source,
+      r.notes,
+      r.updated_at,
+      r.sabha_week_id
+     FROM people p
+     LEFT JOIN attendance_records r
+       ON r.person_id = p.id
+      AND r.sabha_week_id = ?
+     WHERE p.active = 1
+     ORDER BY p.first_name, p.last_name`,
+    sabhaWeekId
+  );
+
+  const records = people.map((row) => ({
+    id: row.id,
+    sabhaWeekId,
+    personId: row.person_id,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    personName: `${row.first_name} ${row.last_name}`,
+    bkmsId: row.bkms_id,
+    center: row.center,
+    telegramChatId: row.telegram_chat_id,
+    status: row.status || null,
+    checkedInAt: row.checked_in_at || null,
+    source: row.source || null,
+    notes: row.notes || "",
+    updatedAt: row.updated_at || null
+  }));
+
+  const counts = buildAttendanceCounts(records);
+  return {
+    id: sabhaWeek.id,
+    sabhaDate: sabhaWeek.sabhaDate,
+    sabhaTime: sabhaWeek.sabhaTime,
+    notes: sabhaWeek.notes,
+    status: sabhaWeek.status,
+    session: session ? {
+      ...session,
+      deepLink: buildAttendanceDeepLink(env.BOT_USERNAME || "sfkishorebot", session.token)
+    } : null,
+    lateThresholdAt: getAttendanceLateThreshold(sabhaWeek, timezone).toISOString(),
+    expiresAt: session?.expiresAt || getAttendanceExpiryIso(sabhaWeek, timezone),
+    counts,
+    records
+  };
+}
+
+export async function getAttendanceOverview(env, now = dayjs()) {
+  const timezone = env.TIMEZONE || "America/Los_Angeles";
+  const weeks = await queryAll(
+    env,
+    "SELECT id, sabha_date, sabha_time FROM sabha_weeks ORDER BY sabha_date DESC, sabha_time DESC, id DESC"
+  );
+
+  let featuredWeek = null;
+  for (const week of weeks) {
+    if (isFutureSabha(week.sabha_date, week.sabha_time, timezone, now) || combineSabhaDateTime(week.sabha_date, week.sabha_time, timezone).isSame(now, "day")) {
+      featuredWeek = await getAttendanceWeek(env, week.id);
+      break;
+    }
+  }
+
+  if (!featuredWeek && weeks[0]) {
+    featuredWeek = await getAttendanceWeek(env, weeks[0].id);
+  }
+
+  const pastWeeks = [];
+  for (const week of weeks) {
+    if (featuredWeek?.id === week.id) {
+      continue;
+    }
+    pastWeeks.push(await getAttendanceWeek(env, week.id));
+  }
+
+  return {
+    currentWeek: featuredWeek,
+    pastWeeks
+  };
+}
+
+export async function upsertAttendanceManual(env, sabhaWeekId, records) {
+  for (const item of records) {
+    const personId = Number(item.personId);
+    const status = item.status || null;
+    const notes = (item.notes || "").trim() || null;
+
+    if (!status) {
+      await execute(
+        env,
+        "DELETE FROM attendance_records WHERE sabha_week_id = ? AND person_id = ?",
+        sabhaWeekId,
+        personId
+      );
+      continue;
+    }
+
+    const existing = await queryFirst(
+      env,
+      "SELECT checked_in_at FROM attendance_records WHERE sabha_week_id = ? AND person_id = ?",
+      sabhaWeekId,
+      personId
+    );
+    const checkedInAt = status === "Absent"
+      ? null
+      : (existing?.checked_in_at || dayjs().toISOString());
+
+    await execute(
+      env,
+      `INSERT INTO attendance_records (
+        sabha_week_id, person_id, status, checked_in_at, source, notes, updated_at
+      ) VALUES (?, ?, ?, ?, 'manual', ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(sabha_week_id, person_id) DO UPDATE SET
+        status = excluded.status,
+        checked_in_at = excluded.checked_in_at,
+        source = 'manual',
+        notes = excluded.notes,
+        updated_at = CURRENT_TIMESTAMP`,
+      sabhaWeekId,
+      personId,
+      status,
+      checkedInAt,
+      notes
+    );
+  }
+
+  return getAttendanceWeek(env, sabhaWeekId);
+}
+
+export async function markAttendanceFromTelegram(env, token, telegramChatId, now = dayjs()) {
+  const session = await getAttendanceSessionByToken(env, token);
+  if (!session || !session.active) {
+    return { ok: false, reason: "closed" };
+  }
+
+  if (dayjs(session.expiresAt).isBefore(now) || dayjs(session.expiresAt).isSame(now)) {
+    return { ok: false, reason: "closed" };
+  }
+
+  const person = await getPersonByTelegramChatId(env, telegramChatId);
+  if (!person) {
+    return { ok: false, reason: "unlinked" };
+  }
+
+  const existing = await queryFirst(
+    env,
+    "SELECT * FROM attendance_records WHERE sabha_week_id = ? AND person_id = ?",
+    session.sabhaWeekId,
+    person.id
+  );
+
+  if (existing?.source === "manual") {
+    return { ok: true, lockedManual: true, person };
+  }
+
+  if (existing?.source === "qr" && existing?.status) {
+    return { ok: true, alreadyRecorded: true, person, status: existing.status };
+  }
+
+  const timezone = env.TIMEZONE || "America/Los_Angeles";
+  const lateThreshold = getAttendanceLateThreshold(session.sabhaWeek, timezone);
+  const status = now.isSame(lateThreshold) || now.isAfter(lateThreshold) ? "Late" : "Present";
+  const checkedInAt = now.toISOString();
+
+  await execute(
+    env,
+    `INSERT INTO attendance_records (
+      sabha_week_id, person_id, status, checked_in_at, source, notes, updated_at
+    ) VALUES (?, ?, ?, ?, 'qr', NULL, CURRENT_TIMESTAMP)
+    ON CONFLICT(sabha_week_id, person_id) DO UPDATE SET
+      status = excluded.status,
+      checked_in_at = excluded.checked_in_at,
+      source = 'qr',
+      notes = NULL,
+      updated_at = CURRENT_TIMESTAMP`,
+    session.sabhaWeekId,
+    person.id,
+    status,
+    checkedInAt
+  );
+
+  return {
+    ok: true,
+    person,
+    status,
+    sabhaWeek: session.sabhaWeek
+  };
+}
+
+export async function finalizeAttendanceForDueSessions(env, now = dayjs()) {
+  const dueSessions = (await queryAll(
+    env,
+    `SELECT
+      s.*,
+      w.sabha_date,
+      w.sabha_time,
+      w.notes,
+      w.status
+     FROM attendance_sessions s
+     JOIN sabha_weeks w ON w.id = s.sabha_week_id
+     WHERE s.active = 1
+       AND s.report_sent_at IS NULL
+       AND s.expires_at <= ?`,
+    now.toISOString()
+  )).map((row) => ({
+    ...mapAttendanceSession(row),
+    sabhaWeek: {
+      id: row.sabha_week_id,
+      sabhaDate: row.sabha_date,
+      sabhaTime: row.sabha_time,
+      notes: row.notes,
+      status: row.status
+    }
+  }));
+
+  for (const session of dueSessions) {
+    const people = await getPeople(env);
+    for (const person of people.filter((item) => item.active)) {
+      const existing = await queryFirst(
+        env,
+        "SELECT id FROM attendance_records WHERE sabha_week_id = ? AND person_id = ?",
+        session.sabhaWeekId,
+        person.id
+      );
+      if (existing) {
+        continue;
+      }
+      await execute(
+        env,
+        `INSERT INTO attendance_records (
+          sabha_week_id, person_id, status, checked_in_at, source, notes, updated_at
+        ) VALUES (?, ?, 'Absent', NULL, 'auto', NULL, CURRENT_TIMESTAMP)`,
+        session.sabhaWeekId,
+        person.id
+      );
+    }
+  }
+
+  return dueSessions;
+}
+
+export async function markAttendanceReportSent(env, attendanceSessionId, telegramMessageId) {
+  await execute(
+    env,
+    `UPDATE attendance_sessions
+     SET report_sent_at = CURRENT_TIMESTAMP,
+         report_message_id = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    String(telegramMessageId),
+    attendanceSessionId
+  );
+}
+
+export async function buildAttendanceCsv(env, sabhaWeekId) {
+  const attendanceWeek = await getAttendanceWeek(env, sabhaWeekId);
+  if (!attendanceWeek) {
+    throw new Error("Sabha week not found.");
+  }
+
+  const rows = [
+    ["Sabha Date", "Sabha Time", "First Name", "Last Name", "BKMS/MIS ID", "Center", "Attendance Status", "Check-In Time", "Source", "Notes"]
+  ];
+
+  for (const record of attendanceWeek.records) {
+    rows.push([
+      attendanceWeek.sabhaDate,
+      attendanceWeek.sabhaTime,
+      record.firstName,
+      record.lastName,
+      record.bkmsId,
+      record.center,
+      record.status || "Not checked in yet",
+      record.checkedInAt || "",
+      record.source || "",
+      record.notes || ""
+    ]);
+  }
+
+  return rows
+    .map((row) => row.map((value) => `"${String(value ?? "").replace(/"/g, '""')}"`).join(","))
+    .join("\n");
 }
 
 export async function setSummaryChatTarget(env, chat) {

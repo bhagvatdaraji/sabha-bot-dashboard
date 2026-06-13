@@ -28,10 +28,22 @@ const emptyDmState = {
   message: ""
 };
 
+const emptyGroupMessageState = {
+  message: ""
+};
+
+const emptySummaryState = {
+  sabhaWeekId: "",
+  messageText: "",
+  sentAt: null,
+  sendHistory: []
+};
+
 const TABS = {
   members: "members",
   planner: "planner",
-  history: "history"
+  history: "history",
+  summary: "summary"
 };
 
 function getStoredToken() {
@@ -108,6 +120,28 @@ function getWeekSendLabel(week) {
 
 function isUpcomingWeek(week) {
   return new Date(`${week.sabhaDate}T${week.sabhaTime}`) >= new Date();
+}
+
+function getSummarySendLabel(summaryForm) {
+  if (!summaryForm.sabhaWeekId) {
+    return "Pick a Sabha week";
+  }
+  if (!summaryForm.sentAt) {
+    return "Summary not sent";
+  }
+  return `Last sent ${new Date(summaryForm.sentAt).toLocaleString()}`;
+}
+
+function formatSummaryDate(dateString) {
+  const date = new Date(`${dateString}T00:00:00`);
+  return Number.isNaN(date.getTime())
+    ? dateString
+    : date.toLocaleDateString("en-US", {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric"
+      });
 }
 
 function StatCard({ label, value, tone = "default" }) {
@@ -254,6 +288,8 @@ function App() {
   const [statusMessage, setStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [dmState, setDmState] = useState(emptyDmState);
+  const [groupMessageState, setGroupMessageState] = useState(emptyGroupMessageState);
+  const [summaryForm, setSummaryForm] = useState(emptySummaryState);
   const [activeTab, setActiveTab] = useState(TABS.members);
   const [showTemplates, setShowTemplates] = useState(false);
 
@@ -287,6 +323,7 @@ function App() {
           notes: activeWeek.notes || "",
           status: activeWeek.status
         });
+        hydrateSummary(activeWeek);
       }
       setErrorMessage("");
     } catch (error) {
@@ -325,6 +362,20 @@ function App() {
     setAssignmentsDraft(nextState);
   }
 
+  function buildDefaultSummaryMessage(week) {
+    return `Jai Swaminaryan! In this weeks sabha (${formatSummaryDate(week.sabhaDate)}) we learned:`;
+  }
+
+  function hydrateSummary(week) {
+    const summary = week.summary;
+    setSummaryForm({
+      sabhaWeekId: String(week.id),
+      messageText: summary?.messageText || buildDefaultSummaryMessage(week),
+      sentAt: summary?.sentAt || null,
+      sendHistory: summary?.sendHistory || []
+    });
+  }
+
   function updatePersonForm(field, value) {
     setPersonForm((current) => ({ ...current, [field]: value }));
   }
@@ -342,6 +393,10 @@ function App() {
         [field]: value
       }
     }));
+  }
+
+  function updateSummaryForm(field, value) {
+    setSummaryForm((current) => ({ ...current, [field]: value }));
   }
 
   async function handleLogin(event) {
@@ -554,6 +609,65 @@ function App() {
     }
   }
 
+  async function handleSendGroupMessage(event) {
+    event.preventDefault();
+    try {
+      const result = await apiFetch("/group/message", token, {
+        method: "POST",
+        body: JSON.stringify({ message: groupMessageState.message })
+      });
+      setStatusMessage(`Message sent to ${result.summaryChat?.title || "the group"}.`);
+      setGroupMessageState(emptyGroupMessageState);
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function handleSaveSummary(event) {
+    event.preventDefault();
+    if (!summaryForm.sabhaWeekId) {
+      setErrorMessage("Choose a Sabha week for the summary.");
+      return;
+    }
+    try {
+      const saved = await apiFetch(`/sabha-weeks/${summaryForm.sabhaWeekId}/summary`, token, {
+        method: "PUT",
+        body: JSON.stringify({ messageText: summaryForm.messageText })
+      });
+      setSummaryForm((current) => ({
+        ...current,
+        sentAt: saved.sentAt || null,
+        sendHistory: saved.sendHistory || current.sendHistory
+      }));
+      setStatusMessage("Sabha summary saved.");
+      await loadBootstrap();
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function handleSendSummary() {
+    if (!summaryForm.sabhaWeekId) {
+      setErrorMessage("Choose a Sabha week for the summary.");
+      return;
+    }
+    try {
+      const result = await apiFetch(`/sabha-weeks/${summaryForm.sabhaWeekId}/summary/send`, token, {
+        method: "POST",
+        body: JSON.stringify({ messageText: summaryForm.messageText })
+      });
+      setStatusMessage(`Sabha summary sent to ${result.summaryChat?.title || "the group"}.`);
+      setSummaryForm((current) => ({
+        ...current,
+        sentAt: result.summary?.sentAt || current.sentAt,
+        sendHistory: result.summary?.sendHistory || current.sendHistory
+      }));
+      await loadBootstrap();
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
   function startNewWeek() {
     setActiveTab(TABS.planner);
     setCurrentWeek(null);
@@ -601,6 +715,9 @@ function App() {
         </button>
         <button type="button" className={`tab-button ${activeTab === TABS.history ? "tab-button--active" : ""}`} onClick={() => setActiveTab(TABS.history)}>
           Sabha History
+        </button>
+        <button type="button" className={`tab-button ${activeTab === TABS.summary ? "tab-button--active" : ""}`} onClick={() => setActiveTab(TABS.summary)}>
+          Sabha Summary
         </button>
       </nav>
 
@@ -904,6 +1021,101 @@ function App() {
                 )}
               </div>
             </div>
+          </section>
+        )}
+
+        {activeTab === TABS.summary && (
+          <section className="tab-panel tab-panel--summary">
+            <div className="panel">
+              <div className="panel-header">
+                <h3>Summary Destination</h3>
+                <p>
+                  {overview?.summaryChat
+                    ? `Detected group chat: ${overview.summaryChat.title}`
+                    : "The SF Kishore Mandal group has not been connected yet. Send /setsummarygroup inside that Telegram group."}
+                </p>
+              </div>
+              <span className={`badge ${overview?.summaryChat ? "badge--success" : "badge--danger"}`}>
+                {overview?.summaryChat ? "Group connected" : "Group not connected"}
+              </span>
+            </div>
+
+            <form className="panel form-grid" onSubmit={handleSendGroupMessage}>
+              <div className="panel-header">
+                <h3>Message SF Kishore Mandal</h3>
+                <p>Send a direct text message into the connected group as the bot.</p>
+              </div>
+              <label className="full-width">
+                Group message
+                <textarea
+                  rows="4"
+                  value={groupMessageState.message}
+                  onChange={(e) => setGroupMessageState({ message: e.target.value })}
+                  placeholder="Write the message you want to post in SF Kishore Mandal."
+                  required
+                />
+              </label>
+              <button type="submit" className="primary">Send Message To Group</button>
+            </form>
+
+            <form className="panel form-grid" onSubmit={handleSaveSummary}>
+              <div className="panel-header">
+                <h3>Sabha Summary</h3>
+                <p>Choose a Sabha week, customize the message, save it, and send it to the group after Sabha.</p>
+              </div>
+              <label>
+                Sabha week
+                <select
+                  value={summaryForm.sabhaWeekId}
+                  onChange={(e) => {
+                    const selectedWeek = history.find((week) => String(week.id) === e.target.value);
+                    if (selectedWeek) {
+                      setCurrentWeek(selectedWeek);
+                      hydrateSummary(selectedWeek);
+                    } else {
+                      setSummaryForm(emptySummaryState);
+                    }
+                  }}
+                  required
+                >
+                  <option value="">Choose Sabha week</option>
+                  {history.map((week) => (
+                    <option key={week.id} value={week.id}>
+                      {week.sabhaDate} at {week.sabhaTime}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="full-width">
+                Summary message
+                <textarea
+                  rows="5"
+                  value={summaryForm.messageText}
+                  onChange={(e) => updateSummaryForm("messageText", e.target.value)}
+                  required
+                />
+              </label>
+              <div className="summary-actions">
+                <span className={`badge ${summaryForm.sentAt ? "badge--success" : ""}`}>
+                  {getSummarySendLabel(summaryForm)}
+                </span>
+                <button type="submit" className="ghost">Save Summary</button>
+                <button type="button" className="primary" onClick={handleSendSummary}>Send Summary To Group</button>
+              </div>
+            </form>
+            <details className="panel history-details">
+              <summary>Summary send history</summary>
+              <div className="reason-list">
+                {(summaryForm.sendHistory || []).length === 0 && (
+                  <p className="reason-text">No summary sends yet.</p>
+                )}
+                {(summaryForm.sendHistory || []).map((entry) => (
+                  <p key={entry.id} className="reason-text">
+                    {new Date(entry.sentAt).toLocaleString()} · {entry.messageText}
+                  </p>
+                ))}
+              </div>
+            </details>
           </section>
         )}
       </main>

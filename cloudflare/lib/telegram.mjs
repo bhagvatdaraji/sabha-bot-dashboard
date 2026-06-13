@@ -32,6 +32,13 @@ export async function sendDirectMessage(env, chatId, text) {
   });
 }
 
+export async function sendGroupMessage(env, chatId, text) {
+  return telegramRequest(env, "sendMessage", {
+    chat_id: String(chatId),
+    text
+  });
+}
+
 export async function sendAssignmentMessage(env, assignment, sabhaWeek) {
   return telegramRequest(env, "sendMessage", {
     chat_id: String(assignment.telegramChatId),

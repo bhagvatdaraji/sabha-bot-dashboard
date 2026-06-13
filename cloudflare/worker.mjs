@@ -1,6 +1,7 @@
 import { createAuthToken, requireAuth } from "./lib/auth.mjs";
 import { addCorsHeaders, ALLOWED_CENTERS, corsPreflight, dayjs, jsonResponse } from "./lib/helpers.mjs";
 import {
+  buildDefaultSummaryMessage,
   buildAssignmentFollowUpMessage,
   clearBotSession,
   confirmAssignment,
@@ -24,19 +25,25 @@ import {
   getPersonByTelegramChatId,
   getReminderSnapshot,
   getRoles,
+  getSabhaSummaryByWeekId,
+  getSabhaSummarySendHistory,
   getSabhaWeekById,
+  getSummaryChat,
   getSetting,
   getTemplates,
   logConfirmationEvent,
   markAssignmentSent,
   markFollowUpSent,
+  markSabhaSummarySent,
   saveBotSession,
+  setSummaryChatTarget,
   setSetting,
   tryRecordProcessedUpdate,
   updatePerson,
   updateSabhaWeek,
   updateTemplate,
   upsertAssignments,
+  upsertSabhaSummary,
   upsertPersonFromTelegram,
   upsertTelegramChat
 } from "./lib/store.mjs";
@@ -45,6 +52,7 @@ import {
   sendAssignmentFollowUp,
   sendAssignmentMessage,
   sendDirectMessage,
+  sendGroupMessage,
   telegramRequest
 } from "./lib/telegram.mjs";
 
@@ -76,6 +84,26 @@ async function notifyCoordinator(env, text) {
 
   await sendDirectMessage(env, coordinator.telegramChatId, text);
   return true;
+}
+
+async function sendSabhaSummary(env, sabhaWeekId, payload = {}) {
+  const summaryChat = await getSummaryChat(env);
+  if (!summaryChat?.chatId) {
+    throw new Error("The SF Kishore Mandal group has not been connected yet.");
+  }
+
+  const summary = await upsertSabhaSummary(env, sabhaWeekId, payload);
+  const response = await sendGroupMessage(env, summaryChat.chatId, summary.messageText);
+  await markSabhaSummarySent(env, sabhaWeekId, response.message_id);
+
+  return {
+    response,
+    summaryChat,
+    summary: {
+      ...(await getSabhaSummaryByWeekId(env, sabhaWeekId)),
+      sendHistory: await getSabhaSummarySendHistory(env, sabhaWeekId)
+    }
+  };
 }
 
 async function sendAssignments(env, sabhaWeekId) {
@@ -260,6 +288,16 @@ async function handleTelegramWebhook(request, env) {
 
   if (update.message?.chat) {
     await upsertTelegramChat(env, update.message.chat);
+    if ((update.message.chat.type === "group" || update.message.chat.type === "supergroup")
+      && update.message.text?.trim() === "/setsummarygroup") {
+      const chat = await setSummaryChatTarget(env, update.message.chat);
+      await sendGroupMessage(
+        env,
+        update.message.chat.id,
+        `This group is now set as the Sabha summary destination: ${chat.title || "current group"}.`
+      );
+      return jsonResponse({ ok: true });
+    }
     if (update.message.chat.type !== "private") {
       return jsonResponse({ ok: true });
     }
@@ -402,6 +440,16 @@ async function routeApi(request, env, url) {
     return jsonResponse({ ok: true, messageId: response.message_id });
   }
 
+  if (pathname === "/api/group/message" && method === "POST") {
+    const summaryChat = await getSummaryChat(env);
+    if (!summaryChat?.chatId) {
+      return errorResponse(new Error("No summary group is connected yet."));
+    }
+    const body = await readJson(request);
+    const response = await sendGroupMessage(env, summaryChat.chatId, String(body.message || "").trim());
+    return jsonResponse({ ok: true, messageId: response.message_id, summaryChat });
+  }
+
   if (pathname === "/api/roles" && method === "GET") {
     return jsonResponse(await getRoles(env));
   }
@@ -446,6 +494,47 @@ async function routeApi(request, env, url) {
   const weekSendMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/send$/);
   if (weekSendMatch && method === "POST") {
     return jsonResponse(await sendAssignments(env, Number(weekSendMatch[1])));
+  }
+
+  const weekSummaryMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/summary$/);
+  if (weekSummaryMatch && method === "GET") {
+    const sabhaWeek = await getSabhaWeekById(env, Number(weekSummaryMatch[1]));
+    if (!sabhaWeek) {
+      return notFound();
+    }
+    const summary = await getSabhaSummaryByWeekId(env, sabhaWeek.id) || {
+      sabhaWeekId: sabhaWeek.id,
+      messageText: buildDefaultSummaryMessage(sabhaWeek, env),
+      sentAt: null,
+      sendCount: 0,
+      telegramMessageId: null
+    };
+    return jsonResponse({
+      ...summary,
+      sendHistory: await getSabhaSummarySendHistory(env, sabhaWeek.id)
+    });
+  }
+  if (weekSummaryMatch && method === "PUT") {
+    const sabhaWeek = await getSabhaWeekById(env, Number(weekSummaryMatch[1]));
+    if (!sabhaWeek) {
+      return notFound();
+    }
+    return jsonResponse(await upsertSabhaSummary(env, sabhaWeek.id, await readJson(request)));
+  }
+
+  const weekSummarySendMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/summary\/send$/);
+  if (weekSummarySendMatch && method === "POST") {
+    const sabhaWeek = await getSabhaWeekById(env, Number(weekSummarySendMatch[1]));
+    if (!sabhaWeek) {
+      return notFound();
+    }
+    const result = await sendSabhaSummary(env, sabhaWeek.id, await readJson(request));
+    return jsonResponse({
+      ok: true,
+      sabhaWeekId: sabhaWeek.id,
+      summary: result.summary,
+      summaryChat: result.summaryChat
+    });
   }
 
   return notFound();

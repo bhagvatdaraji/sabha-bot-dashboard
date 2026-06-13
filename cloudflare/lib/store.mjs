@@ -56,6 +56,33 @@ function mapAssignment(row) {
   };
 }
 
+function mapSummary(row) {
+  if (!row) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    sabhaWeekId: row.sabha_week_id,
+    messageText: row.message_text,
+    sentAt: row.sent_at,
+    sendCount: row.send_count || 0,
+    telegramMessageId: row.telegram_message_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function mapSummarySend(row) {
+  return {
+    id: row.id,
+    sabhaWeekId: row.sabha_week_id,
+    messageText: row.message_text,
+    telegramMessageId: row.telegram_message_id,
+    sentAt: row.sent_at
+  };
+}
+
 async function queryAll(env, sql, ...params) {
   const result = await env.DB.prepare(sql).bind(...params).all();
   return result.results || [];
@@ -383,6 +410,7 @@ export async function getSabhaWeekById(env, id) {
   }
 
   const assignments = await getAssignmentsForWeek(env, id);
+  const summary = await getSabhaSummaryByWeekId(env, id);
   return {
     id: week.id,
     sabhaDate: week.sabha_date,
@@ -390,6 +418,10 @@ export async function getSabhaWeekById(env, id) {
     notes: week.notes,
     status: week.status,
     assignments,
+    summary: summary ? {
+      ...summary,
+      sendHistory: await getSabhaSummarySendHistory(env, id)
+    } : null,
     sendSummary: buildSendSummary(assignments),
     createdAt: week.created_at,
     updatedAt: week.updated_at
@@ -432,7 +464,8 @@ export async function getOverview(env) {
     unconfirmedCount: counts?.unconfirmed_count || 0,
     coordinator: await getCoordinator(env),
     latestWeek: await getLatestWeek(env),
-    nextWeekScheduled: Boolean(await findUpcomingSabha(env))
+    nextWeekScheduled: Boolean(await findUpcomingSabha(env)),
+    summaryChat: await getSummaryChat(env)
   };
 }
 
@@ -686,8 +719,8 @@ export async function getReminderSnapshot(env, now = dayjs()) {
 export async function upsertTelegramChat(env, chat) {
   await execute(
     env,
-    `INSERT INTO telegram_chats (chat_id, chat_type, title, username, updated_at)
-     VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `INSERT INTO telegram_chats (chat_id, chat_type, title, username, is_summary_target, updated_at)
+     VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
      ON CONFLICT(chat_id) DO UPDATE SET
        chat_type = excluded.chat_type,
        title = excluded.title,
@@ -698,6 +731,52 @@ export async function upsertTelegramChat(env, chat) {
     chat.title || null,
     chat.username || null
   );
+}
+
+export async function getSummaryChat(env) {
+  const row = await queryFirst(
+    env,
+    `SELECT chat_id, chat_type, title, username, is_summary_target, created_at, updated_at
+     FROM telegram_chats
+     WHERE is_summary_target = 1
+     ORDER BY updated_at DESC
+     LIMIT 1`
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    chatId: row.chat_id,
+    chatType: row.chat_type,
+    title: row.title,
+    username: row.username,
+    isSummaryTarget: Boolean(row.is_summary_target),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+export async function setSummaryChatTarget(env, chat) {
+  await execute(env, "UPDATE telegram_chats SET is_summary_target = 0");
+  await execute(
+    env,
+    `INSERT INTO telegram_chats (chat_id, chat_type, title, username, is_summary_target, updated_at)
+     VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+     ON CONFLICT(chat_id) DO UPDATE SET
+       chat_type = excluded.chat_type,
+       title = excluded.title,
+       username = excluded.username,
+       is_summary_target = 1,
+       updated_at = CURRENT_TIMESTAMP`,
+    String(chat.id),
+    chat.type,
+    chat.title || null,
+    chat.username || null
+  );
+
+  return getSummaryChat(env);
 }
 
 export async function getBotSession(env, chatId) {
@@ -745,4 +824,82 @@ export async function setSetting(env, key, value) {
     key,
     value
   );
+}
+
+export function buildDefaultSummaryMessage(sabhaWeek, env) {
+  return `Jai Swaminaryan! In this weeks sabha (${formatSabhaDate(sabhaWeek.sabhaDate, env.TIMEZONE || "America/Los_Angeles")}) we learned:`;
+}
+
+export async function getSabhaSummarySendHistory(env, sabhaWeekId) {
+  return (await queryAll(
+    env,
+    `SELECT *
+     FROM sabha_summary_sends
+     WHERE sabha_week_id = ?
+     ORDER BY sent_at DESC, id DESC`,
+    sabhaWeekId
+  )).map(mapSummarySend);
+}
+
+export async function getSabhaSummaryByWeekId(env, sabhaWeekId) {
+  return mapSummary(await queryFirst(
+    env,
+    "SELECT * FROM sabha_summaries WHERE sabha_week_id = ?",
+    sabhaWeekId
+  ));
+}
+
+export async function upsertSabhaSummary(env, sabhaWeekId, input) {
+  const existing = await getSabhaSummaryByWeekId(env, sabhaWeekId);
+  const sabhaWeek = await getSabhaWeekById(env, sabhaWeekId);
+  const messageText = String(input.messageText || "").trim() || buildDefaultSummaryMessage(sabhaWeek, env);
+
+  if (existing) {
+    await execute(
+      env,
+      `UPDATE sabha_summaries
+       SET message_text = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE sabha_week_id = ?`,
+      messageText,
+      sabhaWeekId
+    );
+  } else {
+    await execute(
+      env,
+      "INSERT INTO sabha_summaries (sabha_week_id, message_text) VALUES (?, ?)",
+      sabhaWeekId,
+      messageText
+    );
+  }
+
+  return getSabhaSummaryByWeekId(env, sabhaWeekId);
+}
+
+export async function markSabhaSummarySent(env, sabhaWeekId, telegramMessageId) {
+  const summary = await getSabhaSummaryByWeekId(env, sabhaWeekId);
+
+  await execute(
+    env,
+    `UPDATE sabha_summaries
+     SET sent_at = CURRENT_TIMESTAMP,
+         send_count = send_count + 1,
+         telegram_message_id = ?,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE sabha_week_id = ?`,
+    String(telegramMessageId),
+    sabhaWeekId
+  );
+
+  if (summary) {
+    await execute(
+      env,
+      `INSERT INTO sabha_summary_sends (sabha_week_id, message_text, telegram_message_id)
+       VALUES (?, ?, ?)`,
+      sabhaWeekId,
+      summary.messageText,
+      String(telegramMessageId)
+    );
+  }
+
+  return getSabhaSummaryByWeekId(env, sabhaWeekId);
 }

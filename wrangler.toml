@@ -4,14 +4,15 @@ compatibility_date = "2026-06-13"
 
 [vars]
 TIMEZONE = "America/Los_Angeles"
-ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
-GITHUB_PAGES_ORIGIN = ""
+ALLOWED_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173,https://bhagvatdaraji.github.io"
+GITHUB_PAGES_ORIGIN = "https://bhagvatdaraji.github.io"
 BOT_USERNAME = "sfkishorebot"
 
 [[d1_databases]]
 binding = "DB"
 database_name = "kishore_sabha"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_id = "f1a80217-ec6f-464c-9621-70d6891d5af5"
+migrations_dir = "cloudflare/migrations"
 
 [observability.logs]
 enabled = true

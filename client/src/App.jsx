@@ -877,11 +877,30 @@ function App() {
       return;
     }
     try {
-      const records = (selectedAttendanceWeek.records || []).map((record) => ({
+      const draftRecords = (selectedAttendanceWeek.records || []).map((record) => {
+        const draftStatus = attendanceDraft[record.personId]?.status;
+        const draftNotes = attendanceDraft[record.personId]?.notes;
+        return {
+          personId: record.personId,
+          originalStatus: record.status || null,
+          status: draftStatus ?? record.status ?? null,
+          notes: draftNotes ?? record.notes ?? ""
+        };
+      });
+
+      const hasMarkedAnyone = draftRecords.some((record) => record.status && record.status !== record.originalStatus);
+      const uncheckedRecords = draftRecords.filter((record) => !record.status);
+
+      const shouldMarkRemainingAbsent = hasMarkedAnyone
+        && uncheckedRecords.length > 0
+        && window.confirm(`Mark the remaining ${uncheckedRecords.length} unchecked member${uncheckedRecords.length === 1 ? "" : "s"} as Absent?`);
+
+      const records = draftRecords.map((record) => ({
         personId: record.personId,
-        status: attendanceDraft[record.personId]?.status || null,
-        notes: attendanceDraft[record.personId]?.notes || ""
+        status: shouldMarkRemainingAbsent && !record.status ? "Absent" : record.status,
+        notes: record.notes
       }));
+
       const updated = await apiFetch(`/sabha-weeks/${selectedAttendanceWeek.id}/attendance`, token, {
         method: "PUT",
         body: JSON.stringify({ records })

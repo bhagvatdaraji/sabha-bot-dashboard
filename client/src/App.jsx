@@ -46,6 +46,14 @@ const emptyAttendanceOverview = {
   pastWeeks: []
 };
 
+const ATTENDANCE_FILTERS = {
+  all: "all",
+  present: "Present",
+  late: "Late",
+  absent: "Absent",
+  unchecked: "unchecked"
+};
+
 const TABS = {
   members: "members",
   planner: "planner",
@@ -174,6 +182,19 @@ function getAttendanceStatusTone(status) {
 
 function getAttendanceQrUrl(deepLink) {
   return `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(deepLink)}`;
+}
+
+function toDateTimeLocalValue(value) {
+  if (!value) {
+    return "";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const offset = date.getTimezoneOffset();
+  const local = new Date(date.getTime() - offset * 60000);
+  return local.toISOString().slice(0, 16);
 }
 
 function StatCard({ label, value, tone = "default" }) {
@@ -352,6 +373,8 @@ function App() {
   const [summaryForm, setSummaryForm] = useState(emptySummaryState);
   const [selectedAttendanceWeekId, setSelectedAttendanceWeekId] = useState("");
   const [attendanceDraft, setAttendanceDraft] = useState({});
+  const [attendanceFilter, setAttendanceFilter] = useState(ATTENDANCE_FILTERS.all);
+  const [attendanceExpiryInput, setAttendanceExpiryInput] = useState("");
   const [activeTab, setActiveTab] = useState(TABS.members);
   const [showTemplates, setShowTemplates] = useState(false);
 
@@ -365,6 +388,32 @@ function App() {
     () => attendanceWeeks.find((week) => String(week.id) === String(selectedAttendanceWeekId)) || attendanceOverview?.currentWeek || null,
     [attendanceWeeks, attendanceOverview, selectedAttendanceWeekId]
   );
+  const filteredAttendanceRecords = useMemo(() => {
+    if (!selectedAttendanceWeek) {
+      return [];
+    }
+    const records = [...(selectedAttendanceWeek.records || [])];
+    const statusOf = (record) => attendanceDraft[record.personId]?.status || record.status || "";
+    const priority = (record) => {
+      const status = statusOf(record);
+      if (attendanceFilter === ATTENDANCE_FILTERS.all) {
+        if (status === "Present") return 0;
+        if (status === "Late") return 1;
+        if (status === "Absent") return 2;
+        return 3;
+      }
+      if (attendanceFilter === ATTENDANCE_FILTERS.unchecked) {
+        return status ? 1 : 0;
+      }
+      return status === attendanceFilter ? 0 : 1;
+    };
+    records.sort((a, b) => {
+      const diff = priority(a) - priority(b);
+      if (diff !== 0) return diff;
+      return a.personName.localeCompare(b.personName);
+    });
+    return records;
+  }, [selectedAttendanceWeek, attendanceDraft, attendanceFilter]);
 
   async function loadBootstrap(authToken = token) {
     if (!authToken) {
@@ -467,6 +516,8 @@ function App() {
 
   function hydrateAttendance(week) {
     setSelectedAttendanceWeekId(String(week.id));
+    setAttendanceFilter(ATTENDANCE_FILTERS.all);
+    setAttendanceExpiryInput(toDateTimeLocalValue(week.session?.expiresAt || week.expiresAt));
     const nextDraft = {};
     (week.records || []).forEach((record) => {
       nextDraft[record.personId] = {
@@ -794,11 +845,26 @@ function App() {
 
   async function handleGenerateAttendanceSession(weekId, refresh = false) {
     try {
-      await apiFetch(`/sabha-weeks/${weekId}/attendance/session`, token, {
+      const session = await apiFetch(`/sabha-weeks/${weekId}/attendance/session`, token, {
         method: "POST",
         body: JSON.stringify({ refresh })
       });
+      setAttendanceExpiryInput(toDateTimeLocalValue(session.expiresAt));
       setStatusMessage(refresh ? "Attendance QR refreshed." : "Attendance QR generated.");
+      await loadBootstrap();
+    } catch (error) {
+      setErrorMessage(error.message);
+    }
+  }
+
+  async function handleUpdateAttendanceSession(weekId, payload, successMessage) {
+    try {
+      const session = await apiFetch(`/sabha-weeks/${weekId}/attendance/session`, token, {
+        method: "PUT",
+        body: JSON.stringify(payload)
+      });
+      setAttendanceExpiryInput(toDateTimeLocalValue(session.expiresAt));
+      setStatusMessage(successMessage);
       await loadBootstrap();
     } catch (error) {
       setErrorMessage(error.message);
@@ -1204,45 +1270,82 @@ function App() {
           <section className="tab-panel tab-panel--attendance">
             <div className="panel">
               <div className="panel-header">
-                <h3>Current / Upcoming Attendance</h3>
-                <p>Generate a Sabha-specific QR, let members check in through Telegram, and watch attendance update live.</p>
+                <h3>Attendance Check-In</h3>
+                <p>Generate the QR, adjust its expiry if needed, and keep the live roster simple.</p>
               </div>
               {attendanceOverview?.currentWeek ? (
-                <div className="attendance-hero">
-                  <div>
-                    <strong>{attendanceOverview.currentWeek.sabhaDate}</strong>
-                    <p>{attendanceOverview.currentWeek.sabhaTime}</p>
-                    <div className="attendance-actions">
-                      <button
-                        type="button"
-                        className="primary"
-                        onClick={() => handleGenerateAttendanceSession(attendanceOverview.currentWeek.id, Boolean(attendanceOverview.currentWeek.session))}
-                      >
-                        {attendanceOverview.currentWeek.session ? "Refresh QR Token" : "Generate Attendance QR"}
-                      </button>
-                      {attendanceOverview.currentWeek.session?.deepLink && (
+                <div className="attendance-session-shell">
+                  <div className="attendance-session-card">
+                    <div className="attendance-session-copy">
+                      <strong>{attendanceOverview.currentWeek.sabhaDate}</strong>
+                      <p>{attendanceOverview.currentWeek.sabhaTime}</p>
+                      <div className="attendance-actions">
                         <button
                           type="button"
-                          className="ghost"
-                          onClick={() => navigator.clipboard.writeText(attendanceOverview.currentWeek.session.deepLink)}
+                          className="primary"
+                          onClick={() => handleGenerateAttendanceSession(attendanceOverview.currentWeek.id, Boolean(attendanceOverview.currentWeek.session))}
                         >
-                          Copy Deep Link
+                          {attendanceOverview.currentWeek.session ? "Refresh QR Token" : "Generate Attendance QR"}
                         </button>
+                        {attendanceOverview.currentWeek.session?.deepLink && (
+                          <button
+                            type="button"
+                            className="ghost"
+                            onClick={() => navigator.clipboard.writeText(attendanceOverview.currentWeek.session.deepLink)}
+                          >
+                            Copy Deep Link
+                          </button>
+                        )}
+                      </div>
+                      {attendanceOverview.currentWeek.session ? (
+                        <>
+                          <div className="attendance-expiry-row">
+                            <label className="attendance-expiry-field">
+                              QR expires at
+                              <input
+                                type="datetime-local"
+                                value={attendanceExpiryInput}
+                                onChange={(e) => setAttendanceExpiryInput(e.target.value)}
+                              />
+                            </label>
+                            <button
+                              type="button"
+                              className="ghost"
+                              onClick={() => handleUpdateAttendanceSession(
+                                attendanceOverview.currentWeek.id,
+                                { expiresAt: new Date(attendanceExpiryInput).toISOString(), active: true },
+                                "Attendance QR expiry updated."
+                              )}
+                              disabled={!attendanceExpiryInput}
+                            >
+                              Save Expiry
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost ghost--danger"
+                              onClick={() => handleUpdateAttendanceSession(
+                                attendanceOverview.currentWeek.id,
+                                { expiresAt: new Date().toISOString(), active: false },
+                                "Attendance QR expired."
+                              )}
+                            >
+                              Expire QR Code
+                            </button>
+                          </div>
+                          <p className="attendance-link">{attendanceOverview.currentWeek.session.deepLink}</p>
+                        </>
+                      ) : (
+                        <p className="reason-text">No attendance QR has been generated for this Sabha yet.</p>
                       )}
                     </div>
-                    {attendanceOverview.currentWeek.session ? (
-                      <p className="attendance-link">{attendanceOverview.currentWeek.session.deepLink}</p>
-                    ) : (
-                      <p className="reason-text">No attendance QR has been generated for this Sabha yet.</p>
+                    {attendanceOverview.currentWeek.session?.deepLink && (
+                      <img
+                        className="attendance-qr"
+                        src={getAttendanceQrUrl(attendanceOverview.currentWeek.session.deepLink)}
+                        alt="Attendance QR code"
+                      />
                     )}
                   </div>
-                  {attendanceOverview.currentWeek.session?.deepLink && (
-                    <img
-                      className="attendance-qr"
-                      src={getAttendanceQrUrl(attendanceOverview.currentWeek.session.deepLink)}
-                      alt="Attendance QR code"
-                    />
-                  )}
                 </div>
               ) : (
                 <p className="reason-text">Create a Sabha week first to enable attendance.</p>
@@ -1251,21 +1354,50 @@ function App() {
 
             {selectedAttendanceWeek && (
               <>
-                <section className="stats-grid">
-                  <StatCard label="Present" value={selectedAttendanceWeek.counts.present} tone="success" />
-                  <StatCard label="Late" value={selectedAttendanceWeek.counts.late} tone="warm" />
-                  <StatCard label="Absent" value={selectedAttendanceWeek.counts.absent} tone="danger" />
-                  <StatCard label="Not checked in yet" value={selectedAttendanceWeek.counts.unchecked} />
-                </section>
+                <div className="attendance-filter-grid">
+                  <button
+                    type="button"
+                    className={`attendance-filter-card ${attendanceFilter === ATTENDANCE_FILTERS.present ? "attendance-filter-card--active attendance-filter-card--success" : ""}`}
+                    onClick={() => setAttendanceFilter((current) => current === ATTENDANCE_FILTERS.present ? ATTENDANCE_FILTERS.all : ATTENDANCE_FILTERS.present)}
+                  >
+                    <span>Present</span>
+                    <strong>{selectedAttendanceWeek.counts.present}</strong>
+                  </button>
+                  <button
+                    type="button"
+                    className={`attendance-filter-card ${attendanceFilter === ATTENDANCE_FILTERS.late ? "attendance-filter-card--active attendance-filter-card--warm" : ""}`}
+                    onClick={() => setAttendanceFilter((current) => current === ATTENDANCE_FILTERS.late ? ATTENDANCE_FILTERS.all : ATTENDANCE_FILTERS.late)}
+                  >
+                    <span>Late</span>
+                    <strong>{selectedAttendanceWeek.counts.late}</strong>
+                  </button>
+                  <button
+                    type="button"
+                    className={`attendance-filter-card ${attendanceFilter === ATTENDANCE_FILTERS.absent ? "attendance-filter-card--active attendance-filter-card--danger" : ""}`}
+                    onClick={() => setAttendanceFilter((current) => current === ATTENDANCE_FILTERS.absent ? ATTENDANCE_FILTERS.all : ATTENDANCE_FILTERS.absent)}
+                  >
+                    <span>Absent</span>
+                    <strong>{selectedAttendanceWeek.counts.absent}</strong>
+                  </button>
+                  <button
+                    type="button"
+                    className={`attendance-filter-card ${attendanceFilter === ATTENDANCE_FILTERS.unchecked ? "attendance-filter-card--active" : ""}`}
+                    onClick={() => setAttendanceFilter((current) => current === ATTENDANCE_FILTERS.unchecked ? ATTENDANCE_FILTERS.all : ATTENDANCE_FILTERS.unchecked)}
+                  >
+                    <span>Not checked in</span>
+                    <strong>{selectedAttendanceWeek.counts.unchecked}</strong>
+                  </button>
+                </div>
 
                 <div className="panel">
                   <div className="panel-header">
                     <h3>Attendance Roster</h3>
                     <p>
                       {selectedAttendanceWeek.sabhaDate} at {selectedAttendanceWeek.sabhaTime}
+                      {attendanceFilter !== ATTENDANCE_FILTERS.all ? ` · Showing ${attendanceFilter === ATTENDANCE_FILTERS.unchecked ? "Not checked in" : attendanceFilter} first` : ""}
                     </p>
                   </div>
-                  <div className="attendance-actions">
+                  <div className="attendance-toolbar">
                     <button type="button" className="ghost" onClick={() => handleGenerateAttendanceSession(selectedAttendanceWeek.id, true)}>
                       Refresh QR Token
                     </button>
@@ -1276,8 +1408,8 @@ function App() {
                       Save Attendance Changes
                     </button>
                   </div>
-                  <div className="table-list">
-                    {selectedAttendanceWeek.records.map((record) => (
+                  <div className="table-list attendance-roster-list">
+                    {filteredAttendanceRecords.map((record) => (
                       <div key={record.personId} className="person-row attendance-row">
                         <div>
                           <strong>{record.personName}</strong>
@@ -1287,7 +1419,6 @@ function App() {
                               ? `Checked in ${new Date(record.checkedInAt).toLocaleString()}`
                               : "No check-in recorded yet"}
                           </p>
-                          {record.source && <p>Source: {record.source}</p>}
                         </div>
                         <div className="attendance-controls">
                           <span className={`badge ${getAttendanceStatusTone(attendanceDraft[record.personId]?.status || record.status)}`}>
@@ -1318,7 +1449,7 @@ function App() {
             <div className="panel">
               <div className="panel-header">
                 <h3>Previous Weeks</h3>
-                <p>Open any older Sabha week to review or manually edit attendance.</p>
+                <p>Open an older Sabha week when you need to review or edit attendance.</p>
               </div>
               <div className="history-list">
                 {attendanceWeeks.map((week) => (
@@ -1331,10 +1462,10 @@ function App() {
                     <strong>{week.sabhaDate}</strong>
                     <p>{week.sabhaTime}</p>
                     <div className="history-roles">
-                      <span className="badge badge--success">Present: {week.counts.present}</span>
-                      <span className="badge badge--warm">Late: {week.counts.late}</span>
-                      <span className="badge badge--danger">Absent: {week.counts.absent}</span>
-                      <span className="badge badge--outline">Unchecked: {week.counts.unchecked}</span>
+                      <span className="badge badge--success">P {week.counts.present}</span>
+                      <span className="badge badge--warm">L {week.counts.late}</span>
+                      <span className="badge badge--danger">A {week.counts.absent}</span>
+                      <span className="badge badge--outline">N {week.counts.unchecked}</span>
                     </div>
                     <div className="history-actions">
                       <span className={`badge ${week.session?.reportSentAt ? "badge--success" : "badge--outline"}`}>

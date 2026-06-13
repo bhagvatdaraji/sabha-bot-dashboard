@@ -57,6 +57,7 @@ import {
   tryRecordProcessedUpdate,
   upsertAttendanceManual,
   updatePerson,
+  updateAttendanceSession,
   updateSabhaWeek,
   updateTemplate,
   upsertAssignments,
@@ -632,6 +633,10 @@ async function routeApi(request, env, url) {
   if (weekAttendanceSessionMatch && method === "POST") {
     const body = await readJson(request);
     return jsonResponse(await ensureAttendanceSession(env, Number(weekAttendanceSessionMatch[1]), { refresh: Boolean(body.refresh) }));
+  }
+  if (weekAttendanceSessionMatch && method === "PUT") {
+    const body = await readJson(request);
+    return jsonResponse(await updateAttendanceSession(env, Number(weekAttendanceSessionMatch[1]), body));
   }
 
   const weekAttendanceReportMatch = pathname.match(/^\/api\/sabha-weeks\/(\d+)\/attendance\/report$/);

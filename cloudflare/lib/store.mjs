@@ -894,6 +894,47 @@ export async function ensureAttendanceSession(env, sabhaWeekId, { refresh = fals
   };
 }
 
+export async function updateAttendanceSession(env, sabhaWeekId, input = {}) {
+  const session = await getAttendanceSessionByWeekId(env, sabhaWeekId);
+  if (!session) {
+    throw new Error("Attendance QR has not been generated yet.");
+  }
+
+  const updates = [];
+  const values = [];
+
+  if (Object.prototype.hasOwnProperty.call(input, "expiresAt")) {
+    updates.push("expires_at = ?");
+    values.push(input.expiresAt);
+  }
+
+  if (Object.prototype.hasOwnProperty.call(input, "active")) {
+    updates.push("active = ?");
+    values.push(input.active ? 1 : 0);
+  }
+
+  if (!updates.length) {
+    return {
+      ...session,
+      deepLink: buildAttendanceDeepLink(env.BOT_USERNAME || "sfkishorebot", session.token)
+    };
+  }
+
+  updates.push("updated_at = CURRENT_TIMESTAMP");
+  await execute(
+    env,
+    `UPDATE attendance_sessions SET ${updates.join(", ")} WHERE sabha_week_id = ?`,
+    ...values,
+    sabhaWeekId
+  );
+
+  const updated = await getAttendanceSessionByWeekId(env, sabhaWeekId);
+  return {
+    ...updated,
+    deepLink: buildAttendanceDeepLink(env.BOT_USERNAME || "sfkishorebot", updated.token)
+  };
+}
+
 export async function getAttendanceSessionByToken(env, token) {
   const row = await queryFirst(
     env,

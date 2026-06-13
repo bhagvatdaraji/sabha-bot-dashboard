@@ -186,11 +186,19 @@ textarea {
   box-shadow: 0 10px 25px rgba(148, 91, 4, 0.25);
 }
 
-.attendance-hero {
+.attendance-session-shell {
+  display: grid;
+}
+
+.attendance-session-card {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1.25rem;
   align-items: center;
+}
+
+.attendance-session-copy strong {
+  font-size: 1.2rem;
 }
 
 .attendance-qr {
@@ -215,8 +223,75 @@ textarea {
   margin-top: 0.9rem;
 }
 
+.attendance-expiry-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: end;
+  margin-top: 1rem;
+}
+
+.attendance-expiry-field {
+  display: grid;
+  gap: 0.45rem;
+  min-width: min(100%, 260px);
+}
+
+.attendance-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.attendance-filter-card {
+  text-align: left;
+  padding: 1rem 1.05rem;
+  border-radius: 20px;
+  background: rgba(255, 250, 242, 0.88);
+  box-shadow: 0 10px 25px rgba(102, 69, 16, 0.08);
+  color: #6b511e;
+}
+
+.attendance-filter-card span {
+  display: block;
+  color: #7c6338;
+  margin-bottom: 0.3rem;
+}
+
+.attendance-filter-card strong {
+  font-size: 1.4rem;
+}
+
+.attendance-filter-card--active {
+  outline: 2px solid rgba(148, 91, 4, 0.35);
+  background: #fff7ea;
+}
+
+.attendance-filter-card--success {
+  background: linear-gradient(135deg, rgba(233, 255, 236, 0.96), rgba(199, 240, 211, 0.96));
+}
+
+.attendance-filter-card--warm {
+  background: linear-gradient(135deg, rgba(255, 240, 224, 0.96), rgba(244, 198, 127, 0.92));
+}
+
+.attendance-filter-card--danger {
+  background: linear-gradient(135deg, rgba(255, 236, 236, 0.96), rgba(255, 206, 206, 0.96));
+}
+
 .attendance-row {
   align-items: start;
+}
+
+.attendance-toolbar {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.attendance-roster-list {
+  display: grid;
 }
 
 .attendance-controls {
